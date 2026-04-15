@@ -174,18 +174,35 @@ app.post('/api/hospitals/register', async (req, res) => {
 });
 
 app.patch('/api/hospitals/:id/status', async (req, res) => {
-  const { status } = req.body || {};
-  if (!['approved', 'deactivated', 'banned', 'pending'].includes(status)) {
-    return res.status(400).json({ error: 'Invalid status' });
+  const { status, action } = req.body || {};
+
+  let reviewAction = null;
+  let eventName = null;
+
+  if (action === 'approve' || status === 'approved') {
+    reviewAction = 'approve';
+    eventName = 'hospital:approved';
+  } else if (action === 'decline' || ['deactivated', 'banned', 'pending'].includes(status)) {
+    reviewAction = 'decline';
+    eventName = 'hospital:declined';
   }
 
-  const action = status === 'approved' ? 'approve' : 'decline';
-  const hospital = await reviewHospital(req.params.id, action);
+  if (!reviewAction) {
+    return res.status(400).json({
+      error: 'Invalid review payload. Use action=approve|decline or status=approved|deactivated|banned|pending',
+    });
+  }
+
+  const hospital = await reviewHospital(req.params.id, reviewAction);
   if (!hospital) return respondNotFound(res, 'Hospital not found');
 
-  io.emit(`hospital:${status}`, hospital);
+  io.emit(eventName, hospital);
   emitOverview();
-  return res.json({ hospital });
+  return res.json({
+    hospital,
+    status: reviewAction === 'approve' ? 'approved' : 'deactivated',
+    action: reviewAction,
+  });
 });
 
 app.patch('/api/hospitals/:id/availability', async (req, res) => {
