@@ -1,0 +1,23 @@
+# Env and secrets
+.env
+*.pem
+
+# Node
+**/node_modules/
+**/npm-debug.log
+
+# Flutter / Dart
+**/.dart_tool/
+**/build/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+
+# Backend uploads (local fallback only)
+backend/uploads/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
