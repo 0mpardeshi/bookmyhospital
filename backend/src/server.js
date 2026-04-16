@@ -17,6 +17,7 @@ const {
   getHospitalById,
   createPendingHospital,
   reviewHospital,
+  rateHospital,
   updateHospitalAvailability,
   createBooking,
   listBookings,
@@ -127,6 +128,7 @@ function hasUsableSecret(value) {
 function buildAiSystemPrompt(lowDataMode) {
   return [
     'You are BookMyHospital AI assistant.',
+    'You can recommend hospitals using live hospital data (beds, ICU, OT, specialities, equipment, rating).',
     'Give practical medical system guidance, not diagnosis.',
     'Prioritize emergency triage, hospital booking guidance, complaint and safety workflow.',
     lowDataMode
@@ -135,11 +137,104 @@ function buildAiSystemPrompt(lowDataMode) {
   ].join(' ');
 }
 
+function hospitalMatchesNeed(hospital, text) {
+  const message = String(text || '').toLowerCase();
+  const specs = (hospital.specialities || []).map((s) => String(s).toLowerCase()).join(' ');
+  const equipment = (hospital.equipment || []).map((e) => String(e).toLowerCase()).join(' ');
+
+  if (/wife|pregnan|delivery|labor|maternity|baby|childbirth/.test(message)) {
+    return /gyne|pedi|women|child|obstetric|maternity/.test(specs);
+  }
+  if (/emergency|accident|trauma|bleed|critical|urgent/.test(message)) {
+    return Number(hospital.icuAvailable || 0) > 0 || Number(hospital.bedsAvailable || 0) > 0;
+  }
+  if (/appointment|consult|doctor|opd/.test(message)) {
+    return Number(hospital.doctorsAvailable || 0) > 0;
+  }
+  if (/surgery|operation|ot/.test(message)) {
+    return Number(hospital.otAvailable || 0) > 0;
+  }
+
+  return specs.includes(message) || equipment.includes(message) || true;
+}
+
+function scoreHospitalForNeed(hospital, text) {
+  const message = String(text || '').toLowerCase();
+  const rating = Number(hospital.avgReview || 0);
+  const ratingsCount = Number(hospital.ratingsCount || 0);
+  const beds = Number(hospital.bedsAvailable || 0);
+  const icu = Number(hospital.icuAvailable || 0);
+  const ot = Number(hospital.otAvailable || 0);
+  const doctors = Number(hospital.doctorsAvailable || 0);
+  const wait = Number(hospital.queueWaitMinutes || 30);
+
+  let score = (rating * 30) + Math.min(ratingsCount, 250) * 0.2;
+
+  if (/wife|pregnan|delivery|labor|maternity|baby|childbirth/.test(message)) {
+    score += doctors * 3 + beds * 2 + icu * 4 - wait * 0.5;
+  } else if (/emergency|accident|trauma|bleed|critical|urgent/.test(message)) {
+    score += icu * 6 + beds * 3 + doctors * 2 - wait * 1.2;
+  } else if (/appointment|consult|doctor|opd/.test(message)) {
+    score += doctors * 5 + ot * 2 - wait * 0.7;
+  } else if (/surgery|operation|ot/.test(message)) {
+    score += ot * 5 + icu * 2 + doctors * 2 - wait * 0.8;
+  } else {
+    score += beds + icu + doctors - (wait * 0.4);
+  }
+
+  return score;
+}
+
+function tryDataAwareAnswer(message, hospitals, lowDataMode) {
+  const text = String(message || '').trim();
+  if (!text) return null;
+  const lower = text.toLowerCase();
+
+  const locations = [...new Set(hospitals.map((h) => String(h.location || '').trim()).filter(Boolean))];
+  const matchedLocation = locations.find((loc) => lower.includes(loc.toLowerCase()));
+
+  let candidates = hospitals.filter((h) => h.status === 'approved');
+  if (matchedLocation) {
+    candidates = candidates.filter((h) => String(h.location || '').toLowerCase() === matchedLocation.toLowerCase());
+  }
+
+  candidates = candidates.filter((h) => hospitalMatchesNeed(h, lower));
+  if (!candidates.length) {
+    candidates = hospitals.filter((h) => h.status === 'approved');
+  }
+
+  const ranked = [...candidates]
+    .sort((a, b) => scoreHospitalForNeed(b, lower) - scoreHospitalForNeed(a, lower))
+    .slice(0, 3);
+
+  if (!ranked.length) return null;
+
+  const intro = /wife|pregnan|delivery|labor|maternity|baby|childbirth/.test(lower)
+    ? 'Based on live data, these hospitals are strong for maternity-related care:'
+    : /emergency|accident|trauma|bleed|critical|urgent/.test(lower)
+      ? 'Based on live emergency capacity, these are the best immediate options:'
+      : /appointment|consult|doctor|opd/.test(lower)
+        ? 'For consultation/appointment needs, these look best now:'
+        : 'Based on live availability and ratings, these are recommended:';
+
+  const lines = ranked.map((h, idx) => {
+    const specs = (h.specialities || []).slice(0, 3).join(', ');
+    return `${idx + 1}) ${h.name} (${h.location}) • ⭐ ${Number(h.avgReview || 0).toFixed(1)} (${Number(h.ratingsCount || 0)} ratings) • Beds ${Number(h.bedsAvailable || 0)}, ICU ${Number(h.icuAvailable || 0)}, OT ${Number(h.otAvailable || 0)}, Wait ${Number(h.queueWaitMinutes || 0)}m • ${specs}`;
+  });
+
+  if (lowDataMode) {
+    return `${intro}\n${lines.join('\n')}`;
+  }
+
+  return `${intro}\n${lines.join('\n')}\nTip: choose one and use Pre-book/Emergency flow immediately in app.`;
+}
+
 async function askGemini({ message, lowDataMode }) {
   const geminiKey = process.env.GEMINI_API_KEY;
   if (!hasUsableSecret(geminiKey)) return null;
 
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`;
+  const model = String(process.env.GOOGLE_AI_MODEL || 'gemini-2.0-flash').trim();
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -244,6 +339,13 @@ app.post('/api/ai/help', async (req, res) => {
   }
 
   const normalizedMessage = String(message).trim();
+  const hospitals = await listHospitals({ status: 'approved' });
+
+  const dataAware = tryDataAwareAnswer(normalizedMessage, hospitals, Boolean(lowDataMode));
+  if (dataAware) {
+    return res.json({ reply: dataAware, provider: 'local-data-engine', fallback: false });
+  }
+
   try {
     const geminiReply = await askGemini({ message: normalizedMessage, lowDataMode: Boolean(lowDataMode) });
     if (geminiReply) {
@@ -272,6 +374,27 @@ app.get('/api/patients/:patientId/notifications', async (req, res) => {
   }
   const notifications = await listPatientNotifications(patientId);
   return res.json({ notifications });
+});
+
+app.post('/api/hospitals/:id/rate', async (req, res) => {
+  const { rating } = req.body || {};
+  const safeRating = Number(rating);
+  if (!Number.isFinite(safeRating) || safeRating < 1 || safeRating > 5) {
+    return res.status(400).json({ error: 'rating must be between 1 and 5' });
+  }
+
+  const hospital = await getHospitalById(req.params.id);
+  if (!hospital) return respondNotFound(res, 'Hospital not found');
+  if (hospital.status !== 'approved') {
+    return res.status(403).json({ error: 'Only active hospitals can be rated' });
+  }
+
+  const updated = await rateHospital(req.params.id, { rating: safeRating });
+  if (!updated) return respondNotFound(res, 'Hospital not found');
+
+  io.emit('hospital:rating-updated', updated);
+  emitOverview();
+  return res.json({ hospital: updated });
 });
 
 app.post('/api/hospitals/auth', async (req, res) => {

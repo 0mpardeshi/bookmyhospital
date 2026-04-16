@@ -48,6 +48,7 @@ const memory = {
       doctorsAvailable: 18,
       surgeonsAvailable: 6,
       avgReview: 4.5,
+      ratingsCount: 132,
       equipment: ['MRI', 'CT Scan', 'Ventilator', 'Cath Lab'],
       queueWaitMinutes: 34,
       docsSubmitted: true,
@@ -72,6 +73,7 @@ const memory = {
       doctorsAvailable: 9,
       surgeonsAvailable: 3,
       avgReview: 4.2,
+      ratingsCount: 91,
       equipment: ['Ventilator', 'X-Ray', 'ICU Monitoring'],
       queueWaitMinutes: 29,
       docsSubmitted: true,
@@ -96,6 +98,7 @@ const memory = {
       doctorsAvailable: 7,
       surgeonsAvailable: 2,
       avgReview: 4.6,
+      ratingsCount: 76,
       equipment: ['NICU', 'Ultrasound'],
       queueWaitMinutes: 21,
       docsSubmitted: true,
@@ -160,6 +163,7 @@ function ensureSchemas() {
       doctorsAvailable: { type: Number, default: 0 },
       surgeonsAvailable: { type: Number, default: 0 },
       avgReview: { type: Number, default: 0 },
+      ratingsCount: { type: Number, default: 0 },
       queueWaitMinutes: { type: Number, default: 30 },
       docsSubmitted: { type: Boolean, default: false },
       complaintsCount: { type: Number, default: 0 },
@@ -335,6 +339,8 @@ async function createPendingHospital(payload) {
       ...payload,
       status: 'pending',
       docsSubmitted: true,
+      avgReview: Number(payload.avgReview || 0),
+      ratingsCount: Number(payload.ratingsCount || 0),
       queueWaitMinutes: Number(payload.queueWaitMinutes || 30),
     });
     return normalize(hospital, 'hospital');
@@ -345,6 +351,8 @@ async function createPendingHospital(payload) {
     ...payload,
     status: 'pending',
     docsSubmitted: true,
+    avgReview: Number(payload.avgReview || 0),
+    ratingsCount: Number(payload.ratingsCount || 0),
     queueWaitMinutes: Number(payload.queueWaitMinutes || 30),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -395,6 +403,42 @@ async function updateHospitalAvailability(id, updates) {
       hospital[key] = Number(updates[key]);
     }
   });
+  hospital.updatedAt = new Date().toISOString();
+  return hospital;
+}
+
+async function rateHospital(id, { rating }) {
+  const safeRating = Number(rating);
+  if (!Number.isFinite(safeRating) || safeRating < 1 || safeRating > 5) {
+    return null;
+  }
+
+  if (useMongo) {
+    ensureSchemas();
+    const hospital = await schemas.Hospital.findOne({ $or: [{ hospitalId: id }, { _id: id }] });
+    if (!hospital) return null;
+
+    const previousCount = Number(hospital.ratingsCount || 0);
+    const previousAverage = Number(hospital.avgReview || 0);
+    const nextCount = previousCount + 1;
+    const nextAverage = ((previousAverage * previousCount) + safeRating) / nextCount;
+
+    hospital.avgReview = Number(nextAverage.toFixed(2));
+    hospital.ratingsCount = nextCount;
+    await hospital.save();
+    return normalize(hospital, 'hospital');
+  }
+
+  const hospital = memory.hospitals.find((h) => h.id === id);
+  if (!hospital) return null;
+
+  const previousCount = Number(hospital.ratingsCount || 0);
+  const previousAverage = Number(hospital.avgReview || 0);
+  const nextCount = previousCount + 1;
+  const nextAverage = ((previousAverage * previousCount) + safeRating) / nextCount;
+
+  hospital.avgReview = Number(nextAverage.toFixed(2));
+  hospital.ratingsCount = nextCount;
   hospital.updatedAt = new Date().toISOString();
   return hospital;
 }
@@ -540,6 +584,7 @@ module.exports = {
   findHospitalByEmail,
   createPendingHospital,
   reviewHospital,
+  rateHospital,
   updateHospitalAvailability,
   createBooking,
   listBookings,

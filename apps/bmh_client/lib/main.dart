@@ -100,6 +100,7 @@ class HospitalInfo {
     required this.surgeonsAvailable,
     required this.queueWaitMinutes,
     required this.avgReview,
+    required this.ratingsCount,
     required this.specialities,
     required this.status,
   });
@@ -115,6 +116,7 @@ class HospitalInfo {
   final int surgeonsAvailable;
   final int queueWaitMinutes;
   final double avgReview;
+  final int ratingsCount;
   final List<String> specialities;
   final String status;
 
@@ -131,6 +133,7 @@ class HospitalInfo {
       surgeonsAvailable: (json['surgeonsAvailable'] ?? 0) as int,
       queueWaitMinutes: (json['queueWaitMinutes'] ?? 0) as int,
       avgReview: ((json['avgReview'] ?? 0) as num).toDouble(),
+      ratingsCount: (json['ratingsCount'] ?? 0) as int,
       specialities: ((json['specialities'] ?? []) as List)
           .map((item) => item.toString())
           .toList(),
@@ -365,6 +368,31 @@ class ApiService {
         ? 'Low-network fallback:\n• Retry in a few seconds\n• Use refresh button\n• For emergency: call local emergency now'
         : 'Assistant is temporarily offline due to low network. Please retry, or use manual booking/complaint actions from dashboard.';
   }
+
+  Future<HospitalInfo?> submitHospitalRating({
+    required String hospitalId,
+    required int rating,
+  }) async {
+    try {
+      final uri = Uri.parse(
+        '${BackendConfig.baseUrl}/api/hospitals/$hospitalId/rate',
+      );
+      final response = await http
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'rating': rating}),
+          )
+          .timeout(const Duration(seconds: 10));
+      if (response.statusCode != 200) return null;
+      final map = jsonDecode(response.body) as Map<String, dynamic>;
+      final hospital = map['hospital'] as Map<String, dynamic>?;
+      if (hospital == null) return null;
+      return HospitalInfo.fromJson(hospital);
+    } catch (_) {
+      return null;
+    }
+  }
 }
 
 final List<HospitalInfo> _fallbackHospitals = [
@@ -380,6 +408,7 @@ final List<HospitalInfo> _fallbackHospitals = [
     surgeonsAvailable: 6,
     queueWaitMinutes: 34,
     avgReview: 4.5,
+    ratingsCount: 132,
     specialities: ['Cardiology', 'Trauma', 'Critical Care'],
     status: 'approved',
   ),
@@ -395,6 +424,7 @@ final List<HospitalInfo> _fallbackHospitals = [
     surgeonsAvailable: 3,
     queueWaitMinutes: 29,
     avgReview: 4.2,
+    ratingsCount: 91,
     specialities: ['Emergency', 'Orthopedics'],
     status: 'approved',
   ),
@@ -410,6 +440,7 @@ final List<HospitalInfo> _fallbackHospitals = [
     surgeonsAvailable: 2,
     queueWaitMinutes: 21,
     avgReview: 4.6,
+    ratingsCount: 76,
     specialities: ['Pediatrics', 'Gynecology'],
     status: 'approved',
   ),
@@ -894,6 +925,72 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
     );
   }
 
+  Future<void> _rateHospital(HospitalInfo hospital) async {
+    double selected = 5;
+    final submitted = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setModalState) => AlertDialog(
+          title: Text('Rate ${hospital.name}'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Current rating: ${hospital.avgReview.toStringAsFixed(1)} (${hospital.ratingsCount})',
+              ),
+              const SizedBox(height: 12),
+              Text('Your rating: ${selected.toStringAsFixed(0)} / 5'),
+              Slider(
+                value: selected,
+                min: 1,
+                max: 5,
+                divisions: 4,
+                label: selected.toStringAsFixed(0),
+                onChanged: (value) => setModalState(() => selected = value),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Submit Rating'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (submitted != true) return;
+    final updated = await _api.submitHospitalRating(
+      hospitalId: hospital.id,
+      rating: selected.round(),
+    );
+
+    if (!mounted) return;
+    if (updated == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Rating could not be submitted right now.'),
+        ),
+      );
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Thanks! ${updated.name} is now rated ${updated.avgReview.toStringAsFixed(1)}',
+        ),
+      ),
+    );
+    await _loadHospitals();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -984,7 +1081,7 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            '${h.location} • Rating ${h.avgReview.toStringAsFixed(1)}',
+                            '${h.location} • Rating ${h.avgReview.toStringAsFixed(1)} (${h.ratingsCount})',
                           ),
                           const SizedBox(height: 6),
                           Wrap(
@@ -1021,6 +1118,10 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
                               OutlinedButton(
                                 onPressed: () => _complain(h),
                                 child: const Text('Raise Complaint'),
+                              ),
+                              OutlinedButton(
+                                onPressed: () => _rateHospital(h),
+                                child: const Text('Rate Hospital'),
                               ),
                             ],
                           ),
@@ -1435,6 +1536,7 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
   io.Socket? _socket;
   Timer? _pollTimer;
   Timer? _statusTimer;
+  Timer? _banExitTimer;
   bool _loadingBookings = false;
   bool _saving = false;
   String _accountStatus = 'approved';
@@ -1443,6 +1545,12 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
   void initState() {
     super.initState();
     _accountStatus = widget.hospital.status;
+    if (_accountStatus == 'banned') {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _startBanCountdown();
+      });
+    }
     _hospitalId = TextEditingController(text: widget.hospital.id);
     _beds = TextEditingController(
       text: widget.hospital.bedsAvailable.toString(),
@@ -1482,10 +1590,33 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
       final body = jsonDecode(response.body) as Map<String, dynamic>;
       final hospital = body['hospital'] as Map<String, dynamic>?;
       if (hospital == null || !mounted) return;
-      setState(() {
-        _accountStatus = hospital['status']?.toString() ?? _accountStatus;
-      });
+      _applyAccountStatus(hospital['status']?.toString() ?? _accountStatus);
     } catch (_) {}
+  }
+
+  void _applyAccountStatus(String status) {
+    final next = status.trim().isEmpty ? _accountStatus : status.trim();
+    final previous = _accountStatus;
+    if (!mounted) return;
+    setState(() => _accountStatus = next);
+
+    if (next == 'banned' && previous != 'banned') {
+      _startBanCountdown();
+    }
+  }
+
+  void _startBanCountdown() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Justice is been provided kiddo--Batman')),
+    );
+    _banExitTimer?.cancel();
+    _banExitTimer = Timer(const Duration(seconds: 30), () {
+      if (!mounted) return;
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute<void>(builder: (_) => const HospitalLoginScreen()),
+        (route) => false,
+      );
+    });
   }
 
   void _connectLive() {
@@ -1500,6 +1631,15 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
       socket.on('booking:created', (_) => _loadBookings());
       socket.on('hospital:availability-updated', (_) => _loadBookings());
       socket.on('hospital:snapshot', (_) => _loadBookings());
+      socket.on('hospital:status-updated', (payload) {
+        if (payload is! Map<String, dynamic>) return;
+        final payloadId =
+            payload['id']?.toString() ??
+            payload['hospitalId']?.toString() ??
+            '';
+        if (payloadId != _hospitalId.text.trim()) return;
+        _applyAccountStatus(payload['status']?.toString() ?? _accountStatus);
+      });
       socket.connect();
       _socket = socket;
     } catch (_) {}
@@ -1529,6 +1669,7 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
   void dispose() {
     _pollTimer?.cancel();
     _statusTimer?.cancel();
+    _banExitTimer?.cancel();
     _socket?.dispose();
     _hospitalId.dispose();
     _beds.dispose();
@@ -1585,122 +1726,166 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
         ? const Color(0xFF16A34A)
         : const Color(0xFFF59E0B);
     return Scaffold(
-      appBar: AppBar(title: const Text('Hospital Dashboard (Approved)')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          if (_accountStatus != 'approved')
-            Card(
-              color: const Color(0xFFFEE2E2),
-              child: const ListTile(
-                leading: Icon(Icons.lock_outline, color: Colors.red),
-                title: Text('Account is been deactive by admin'),
-                subtitle: Text('File requestion with proof for re activation'),
-              ),
-            ),
-          Card(
-            color: const Color(0xFFE0F2FE),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    widget.hospital.name,
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '${widget.hospital.location} • ${widget.hospital.email}',
-                  ),
-                  const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      Chip(
-                        label: Text(_accountStatus.toUpperCase()),
-                        backgroundColor: approvalColor.withValues(alpha: 0.14),
-                        side: BorderSide(
-                          color: approvalColor.withValues(alpha: 0.35),
-                        ),
-                      ),
-                      Chip(
-                        label: Text('Bookings ${_bookings.length}'),
-                        backgroundColor: const Color(0xFFCCFBF1),
-                        side: BorderSide.none,
-                      ),
-                      Chip(
-                        label: Text('Queue ${_wait.text} min'),
-                        backgroundColor: const Color(0xFFFFEDD5),
-                        side: BorderSide.none,
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
+      appBar: AppBar(
+        title: const Text('Hospital Dashboard (Approved)'),
+        actions: [
+          IconButton(
+            tooltip: 'Refresh now',
+            onPressed: () {
+              _loadHospitalStatus();
+              _loadBookings();
+            },
+            icon: const Icon(Icons.refresh),
           ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            children: [
-              _hospitalStatCard('Beds', _beds.text),
-              _hospitalStatCard('ICU', _icu.text),
-              _hospitalStatCard('OT', _ot.text),
-              _hospitalStatCard('Doctors', _doctors.text),
-              _hospitalStatCard('Surgeons', _surgeons.text),
-              _hospitalStatCard('Bookings', _bookings.length.toString()),
-            ],
-          ),
-          const SizedBox(height: 16),
-          _nField(_hospitalId, 'Hospital ID (demo: hosp_1)'),
-          _nField(_beds, 'Beds Available'),
-          _nField(_icu, 'ICU Available'),
-          _nField(_ot, 'OT Available'),
-          _nField(_doctors, 'Doctors Available'),
-          _nField(_surgeons, 'Surgeons Available'),
-          _nField(_wait, 'Estimated Wait (minutes)'),
-          const SizedBox(height: 10),
-          FilledButton(
-            onPressed: (_saving || _accountStatus != 'approved') ? null : _save,
-            child: Text(_saving ? 'Saving...' : 'Update Live Availability'),
-          ),
-          const SizedBox(height: 18),
-          Text(
-            'Live bookings for ${_hospitalId.text.trim()}',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
-          const SizedBox(height: 8),
-          if (_bookings.isEmpty)
-            const Card(
-              child: ListTile(
-                title: Text('No bookings yet'),
-                subtitle: Text(
-                  'When patient books Bed / Emergency Bed / Appointment, it will appear here.',
-                ),
-              ),
-            )
-          else
-            ..._bookings.map(
-              (b) => Card(
-                child: ListTile(
-                  leading: const Icon(Icons.event_available),
-                  title: Text(
-                    '${b['type'] ?? 'Booking'} • ${b['patientName'] ?? ''}',
-                  ),
-                  subtitle: Text(
-                    'Priority: ${b['priority'] ?? 'normal'} • ${b['status'] ?? ''}',
-                  ),
-                  trailing: Text(b['createdAt']?.toString() ?? ''),
-                ),
-              ),
-            ),
         ],
       ),
+      body: _accountStatus == 'deactivated'
+          ? ListView(
+              padding: const EdgeInsets.all(16),
+              children: const [
+                Card(
+                  color: Color(0xFFFEE2E2),
+                  child: ListTile(
+                    leading: Icon(Icons.lock_outline, color: Colors.red),
+                    title: Text('Account is deactivated by admin'),
+                    subtitle: Text(
+                      'Please request admin for re-activation of account with proof.',
+                    ),
+                  ),
+                ),
+              ],
+            )
+          : _accountStatus == 'banned'
+          ? ListView(
+              padding: const EdgeInsets.all(16),
+              children: const [
+                Card(
+                  color: Color(0xFF111827),
+                  child: ListTile(
+                    leading: Icon(Icons.gavel, color: Colors.white),
+                    title: Text(
+                      'Justice is been provided kiddo--Batman',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                    subtitle: Text(
+                      'Account has been banned permanently. Redirecting to login in 30 seconds.',
+                      style: TextStyle(color: Colors.white70),
+                    ),
+                  ),
+                ),
+              ],
+            )
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                Card(
+                  color: const Color(0xFFE0F2FE),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.hospital.name,
+                          style: Theme.of(context).textTheme.titleLarge
+                              ?.copyWith(fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '${widget.hospital.location} • ${widget.hospital.email}',
+                        ),
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            Chip(
+                              label: Text(_accountStatus.toUpperCase()),
+                              backgroundColor: approvalColor.withValues(
+                                alpha: 0.14,
+                              ),
+                              side: BorderSide(
+                                color: approvalColor.withValues(alpha: 0.35),
+                              ),
+                            ),
+                            Chip(
+                              label: Text('Bookings ${_bookings.length}'),
+                              backgroundColor: const Color(0xFFCCFBF1),
+                              side: BorderSide.none,
+                            ),
+                            Chip(
+                              label: Text('Queue ${_wait.text} min'),
+                              backgroundColor: const Color(0xFFFFEDD5),
+                              side: BorderSide.none,
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: [
+                    _hospitalStatCard('Beds', _beds.text),
+                    _hospitalStatCard('ICU', _icu.text),
+                    _hospitalStatCard('OT', _ot.text),
+                    _hospitalStatCard('Doctors', _doctors.text),
+                    _hospitalStatCard('Surgeons', _surgeons.text),
+                    _hospitalStatCard('Bookings', _bookings.length.toString()),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                _nField(_hospitalId, 'Hospital ID (demo: hosp_1)'),
+                _nField(_beds, 'Beds Available'),
+                _nField(_icu, 'ICU Available'),
+                _nField(_ot, 'OT Available'),
+                _nField(_doctors, 'Doctors Available'),
+                _nField(_surgeons, 'Surgeons Available'),
+                _nField(_wait, 'Estimated Wait (minutes)'),
+                const SizedBox(height: 10),
+                FilledButton(
+                  onPressed: (_saving || _accountStatus != 'approved')
+                      ? null
+                      : _save,
+                  child: Text(
+                    _saving ? 'Saving...' : 'Update Live Availability',
+                  ),
+                ),
+                const SizedBox(height: 18),
+                Text(
+                  'Live bookings for ${_hospitalId.text.trim()}',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 8),
+                if (_bookings.isEmpty)
+                  const Card(
+                    child: ListTile(
+                      title: Text('No bookings yet'),
+                      subtitle: Text(
+                        'When patient books Bed / Emergency Bed / Appointment, it will appear here.',
+                      ),
+                    ),
+                  )
+                else
+                  ..._bookings.map(
+                    (b) => Card(
+                      child: ListTile(
+                        leading: const Icon(Icons.event_available),
+                        title: Text(
+                          '${b['type'] ?? 'Booking'} • ${b['patientName'] ?? ''}',
+                        ),
+                        subtitle: Text(
+                          'Priority: ${b['priority'] ?? 'normal'} • ${b['status'] ?? ''}',
+                        ),
+                        trailing: Text(b['createdAt']?.toString() ?? ''),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
     );
   }
 
