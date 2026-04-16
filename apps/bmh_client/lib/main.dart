@@ -545,7 +545,7 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
     _loadHospitals();
     _connectLive();
     _pollTimer = Timer.periodic(
-      const Duration(seconds: 4),
+      const Duration(seconds: 12),
       (_) => _loadHospitals(),
     );
   }
@@ -1109,11 +1109,11 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
     _loadHospitalStatus();
     _connectLive();
     _pollTimer = Timer.periodic(
-      const Duration(seconds: 3),
+      const Duration(seconds: 10),
       (_) => _loadBookings(),
     );
     _statusTimer = Timer.periodic(
-      const Duration(seconds: 10),
+      const Duration(seconds: 20),
       (_) => _loadHospitalStatus(),
     );
   }
