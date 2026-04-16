@@ -16,7 +16,7 @@ const String kDefaultApiBaseUrl = String.fromEnvironment(
   'API_BASE_URL',
   defaultValue: 'https://bookmyhospital-api.onrender.com',
 );
-const String kBuildLabel = 'R4 2026-04-16';
+const String kBuildLabel = 'R5 2026-04-16';
 
 class BackendConfig {
   static const _prefsKey = 'bookmyhospital_api_base_url';
@@ -166,6 +166,50 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
   String? _error;
   bool _authenticating = false;
 
+  String _normalizedBaseUrl() {
+    var raw = BackendConfig.baseUrl.trim();
+    if (!raw.startsWith('http://') && !raw.startsWith('https://')) {
+      raw = 'https://$raw';
+    }
+    while (raw.endsWith('/')) {
+      raw = raw.substring(0, raw.length - 1);
+    }
+    return raw;
+  }
+
+  Future<void> _wakeBackend(String baseUrl) async {
+    try {
+      await http
+          .get(Uri.parse('$baseUrl/health'))
+          .timeout(const Duration(seconds: 25));
+    } catch (_) {
+      // Warm-up is best-effort; auth request below still runs.
+    }
+  }
+
+  Future<http.Response> _authenticateWithRetry(
+    String baseUrl,
+    String code,
+  ) async {
+    Object? lastError;
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await http
+            .post(
+              Uri.parse('$baseUrl/api/admin/auth'),
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode({'accessCode': code}),
+            )
+            .timeout(const Duration(seconds: 30));
+      } catch (error) {
+        lastError = error;
+        if (attempt == 2) rethrow;
+        await Future<void>.delayed(Duration(seconds: 2 + attempt));
+      }
+    }
+    throw lastError ?? Exception('Unknown auth error');
+  }
+
   Future<void> _setBackendUrl() async {
     final controller = TextEditingController(text: BackendConfig.baseUrl);
     final saved = await showDialog<bool>(
@@ -208,17 +252,14 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
     });
 
     try {
-      await http
-          .get(Uri.parse('${BackendConfig.baseUrl}/health'))
-          .timeout(const Duration(seconds: 70));
+      final baseUrl = _normalizedBaseUrl();
+      await BackendConfig.save(baseUrl);
+      await _wakeBackend(baseUrl);
 
-      final response = await http
-          .post(
-            Uri.parse('${BackendConfig.baseUrl}/api/admin/auth'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'accessCode': _pinController.text.trim()}),
-          )
-          .timeout(const Duration(seconds: 25));
+      final response = await _authenticateWithRetry(
+        baseUrl,
+        _pinController.text.trim(),
+      );
 
       if (!mounted) return;
       if (response.statusCode == 200) {
@@ -233,7 +274,7 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
       if (!mounted) return;
       setState(
         () => _error =
-            'Could not reach backend for admin auth. Check backend URL and retry in 60 seconds (Render cold start).',
+            'Could not reach backend for admin auth. Check URL format and internet, then retry.',
       );
     } finally {
       if (mounted) {
