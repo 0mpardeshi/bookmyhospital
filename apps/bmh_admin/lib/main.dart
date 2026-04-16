@@ -16,6 +16,7 @@ const String kDefaultApiBaseUrl = String.fromEnvironment(
   'API_BASE_URL',
   defaultValue: 'http://10.0.2.2:8080',
 );
+const String kBuildLabel = 'R2 2026-04-16';
 
 class BackendConfig {
   static const _prefsKey = 'bookmyhospital_api_base_url';
@@ -25,6 +26,12 @@ class BackendConfig {
   static Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
     final saved = prefs.getString(_prefsKey);
+    if (saved != null && saved.contains('loca.lt')) {
+      await prefs.remove(_prefsKey);
+      baseUrl = kDefaultApiBaseUrl;
+      configured = false;
+      return;
+    }
     if (saved != null && saved.trim().isNotEmpty) {
       baseUrl = saved.trim();
       configured = true;
@@ -237,6 +244,10 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
                   Text(
                     'BookMyHospital Admin',
                     style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  Text(
+                    'Build $kBuildLabel',
+                    style: Theme.of(context).textTheme.bodySmall,
                   ),
                   const SizedBox(height: 8),
                   OutlinedButton.icon(
@@ -551,7 +562,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                                 height: 140,
                                 width: 240,
                                 fit: BoxFit.cover,
-                                errorBuilder: (_, __, ___) =>
+                                errorBuilder: (_, _, _) =>
                                     const Text('Preview unavailable'),
                               ),
                             )
