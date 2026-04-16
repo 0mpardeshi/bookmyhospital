@@ -138,6 +138,20 @@ app.post('/api/auth/google-login', async (req, res) => {
   return res.json({ user });
 });
 
+app.post('/api/admin/auth', async (req, res) => {
+  const { accessCode } = req.body || {};
+  if (!accessCode) {
+    return res.status(400).json({ error: 'accessCode is required' });
+  }
+
+  const expectedCode = String(process.env.ADMIN_ACCESS_CODE || 'BMH-DEV-2026').trim();
+  if (accessCode !== expectedCode) {
+    return res.status(401).json({ error: 'Invalid admin access code' });
+  }
+
+  return res.json({ ok: true, role: 'admin' });
+});
+
 app.post('/api/hospitals/auth', async (req, res) => {
   const { email } = req.body || {};
   if (!email) return res.status(400).json({ error: 'email is required' });

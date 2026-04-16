@@ -151,6 +151,7 @@ class AdminLoginScreen extends StatefulWidget {
 class _AdminLoginScreenState extends State<AdminLoginScreen> {
   final _pinController = TextEditingController();
   String? _error;
+  bool _authenticating = false;
 
   Future<void> _setBackendUrl() async {
     final controller = TextEditingController(text: BackendConfig.baseUrl);
@@ -187,14 +188,36 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
     }
   }
 
-  void _login() {
-    if (_pinController.text.trim() == 'BMH-DEV-2026') {
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute<void>(builder: (_) => const AdminDashboardScreen()),
+  Future<void> _login() async {
+    setState(() {
+      _error = null;
+      _authenticating = true;
+    });
+
+    try {
+      final response = await http.post(
+        Uri.parse('${BackendConfig.baseUrl}/api/admin/auth'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'accessCode': _pinController.text.trim()}),
       );
-      return;
+
+      if (!mounted) return;
+      if (response.statusCode == 200) {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute<void>(builder: (_) => const AdminDashboardScreen()),
+        );
+        return;
+      }
+
+      setState(() => _error = 'Invalid admin access code');
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _error = 'Could not reach backend for admin auth');
+    } finally {
+      if (mounted) {
+        setState(() => _authenticating = false);
+      }
     }
-    setState(() => _error = 'Invalid dev/admin access code');
   }
 
   @override
@@ -220,7 +243,7 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
                     label: Text('Backend: ${BackendConfig.baseUrl}'),
                   ),
                   const SizedBox(height: 8),
-                  const Text('Use demo admin code: BMH-DEV-2026'),
+                  const Text('Enter your admin access code'),
                   const SizedBox(height: 12),
                   TextField(
                     controller: _pinController,
@@ -235,8 +258,10 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
                     Text(_error!, style: const TextStyle(color: Colors.red)),
                   const SizedBox(height: 8),
                   FilledButton(
-                    onPressed: _login,
-                    child: const Text('Secure Login'),
+                    onPressed: _authenticating ? null : _login,
+                    child: Text(
+                      _authenticating ? 'Authenticating...' : 'Secure Login',
+                    ),
                   ),
                 ],
               ),
