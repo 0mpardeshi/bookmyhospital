@@ -14,9 +14,9 @@ Future<void> main() async {
 
 const String kDefaultApiBaseUrl = String.fromEnvironment(
   'API_BASE_URL',
-  defaultValue: 'http://10.0.2.2:8080',
+  defaultValue: 'https://bookmyhospital-api.onrender.com',
 );
-const String kBuildLabel = 'R2 2026-04-16';
+const String kBuildLabel = 'R4 2026-04-16';
 
 class BackendConfig {
   static const _prefsKey = 'bookmyhospital_api_base_url';
@@ -208,13 +208,17 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
     });
 
     try {
+      await http
+          .get(Uri.parse('${BackendConfig.baseUrl}/health'))
+          .timeout(const Duration(seconds: 70));
+
       final response = await http
           .post(
             Uri.parse('${BackendConfig.baseUrl}/api/admin/auth'),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'accessCode': _pinController.text.trim()}),
           )
-          .timeout(const Duration(seconds: 10));
+          .timeout(const Duration(seconds: 25));
 
       if (!mounted) return;
       if (response.statusCode == 200) {
@@ -227,7 +231,10 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
       setState(() => _error = 'Invalid admin access code');
     } catch (_) {
       if (!mounted) return;
-      setState(() => _error = 'Could not reach backend for admin auth');
+      setState(
+        () => _error =
+            'Could not reach backend for admin auth. Check backend URL and retry in 60 seconds (Render cold start).',
+      );
     } finally {
       if (mounted) {
         setState(() => _authenticating = false);

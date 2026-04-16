@@ -17,9 +17,9 @@ Future<void> main() async {
 
 const String kDefaultApiBaseUrl = String.fromEnvironment(
   'API_BASE_URL',
-  defaultValue: 'http://10.0.2.2:8080',
+  defaultValue: 'https://bookmyhospital-api.onrender.com',
 );
-const String kBuildLabel = 'R2 2026-04-16';
+const String kBuildLabel = 'R4 2026-04-16';
 
 class BackendConfig {
   static const _prefsKey = 'bookmyhospital_api_base_url';
@@ -194,7 +194,7 @@ class ApiService {
       final uri = Uri.parse(
         '${BackendConfig.baseUrl}/api/hospitals?status=approved',
       );
-      final response = await http.get(uri).timeout(const Duration(seconds: 8));
+      final response = await http.get(uri).timeout(const Duration(seconds: 25));
       if (response.statusCode != 200) {
         final cached = await _readCachedMap(_hospitalsCacheKey);
         final cachedList = (cached?['hospitals'] as List<dynamic>? ?? [])
@@ -350,6 +350,10 @@ class ApiService {
 
   Future<String> askAiHelp(String message, {required bool lowDataMode}) async {
     try {
+      await http
+          .get(Uri.parse('${BackendConfig.baseUrl}/health'))
+          .timeout(const Duration(seconds: 70));
+
       final uri = Uri.parse('${BackendConfig.baseUrl}/api/ai/help');
       final response = await http
           .post(
@@ -357,7 +361,7 @@ class ApiService {
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'message': message, 'lowDataMode': lowDataMode}),
           )
-          .timeout(const Duration(seconds: 12));
+          .timeout(const Duration(seconds: 25));
       if (response.statusCode == 200) {
         final map = jsonDecode(response.body) as Map<String, dynamic>;
         return map['reply']?.toString() ?? 'No response from assistant.';
