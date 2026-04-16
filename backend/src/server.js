@@ -206,6 +206,12 @@ app.patch('/api/hospitals/:id/status', async (req, res) => {
 });
 
 app.patch('/api/hospitals/:id/availability', async (req, res) => {
+  const hospitalSnapshot = await getHospitalById(req.params.id);
+  if (!hospitalSnapshot) return respondNotFound(res, 'Hospital not found');
+  if (hospitalSnapshot.status !== 'approved') {
+    return res.status(403).json({ error: 'Hospital account is not active' });
+  }
+
   const hospital = await updateHospitalAvailability(req.params.id, req.body || {});
   if (!hospital) return respondNotFound(res, 'Hospital not found');
 
@@ -239,6 +245,9 @@ app.post('/api/bookings', async (req, res) => {
 
   const hospital = await getHospitalById(hospitalId);
   if (!hospital) return respondNotFound(res, 'Hospital not found');
+  if (hospital.status !== 'approved') {
+    return res.status(403).json({ error: 'Hospital is not currently active for bookings' });
+  }
 
   const booking = await createBooking({
     hospitalId: hospital.id || hospital.hospitalId,

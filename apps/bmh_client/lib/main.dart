@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
@@ -21,6 +22,7 @@ const String kDefaultApiBaseUrl = String.fromEnvironment(
 
 class BackendConfig {
   static const _prefsKey = 'bookmyhospital_api_base_url';
+  static const _patientIdKey = 'bookmyhospital_patient_unique_id';
   static String baseUrl = kDefaultApiBaseUrl;
   static bool configured = false;
 
@@ -41,6 +43,19 @@ class BackendConfig {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_prefsKey, cleaned);
   }
+
+  static Future<String> getOrCreatePatientId() async {
+    final prefs = await SharedPreferences.getInstance();
+    final existing = prefs.getString(_patientIdKey);
+    if (existing != null && existing.trim().isNotEmpty) {
+      return existing.trim();
+    }
+    final random = Random();
+    final generated =
+        'pat_${DateTime.now().millisecondsSinceEpoch}_${1000 + random.nextInt(9000)}';
+    await prefs.setString(_patientIdKey, generated);
+    return generated;
+  }
 }
 
 class BookMyHospitalApp extends StatelessWidget {
@@ -59,9 +74,7 @@ class BookMyHospitalApp extends StatelessWidget {
     return MaterialApp(
       title: 'BookMyHospital',
       debugShowCheckedModeBanner: false,
-      theme: base.copyWith(
-        scaffoldBackgroundColor: const Color(0xFFF0FDFA),
-      ),
+      theme: base.copyWith(scaffoldBackgroundColor: const Color(0xFFF0FDFA)),
       home: const EntryScreen(),
     );
   }
@@ -122,7 +135,9 @@ class HospitalInfo {
 class ApiService {
   Future<List<HospitalInfo>> getApprovedHospitals() async {
     try {
-      final uri = Uri.parse('${BackendConfig.baseUrl}/api/hospitals?status=approved');
+      final uri = Uri.parse(
+        '${BackendConfig.baseUrl}/api/hospitals?status=approved',
+      );
       final response = await http.get(uri).timeout(const Duration(seconds: 8));
       if (response.statusCode != 200) {
         return _fallbackHospitals;
@@ -174,6 +189,7 @@ class ApiService {
   Future<bool> createBooking({
     required String hospitalId,
     required String patientName,
+    required String patientId,
     required String type,
   }) async {
     try {
@@ -184,6 +200,7 @@ class ApiService {
         body: jsonEncode({
           'hospitalId': hospitalId,
           'patientName': patientName,
+          'patientId': patientId,
           'type': type,
         }),
       );
@@ -196,6 +213,7 @@ class ApiService {
   Future<bool> submitComplaint({
     required String hospitalId,
     required String patientName,
+    required String patientId,
     required String description,
     List<String> proofPaths = const [],
   }) async {
@@ -204,11 +222,14 @@ class ApiService {
       final request = http.MultipartRequest('POST', uri)
         ..fields['hospitalId'] = hospitalId
         ..fields['patientName'] = patientName
+        ..fields['patientId'] = patientId
         ..fields['description'] = description;
 
       for (final proofPath in proofPaths) {
         if (proofPath.trim().isEmpty) continue;
-        request.files.add(await http.MultipartFile.fromPath('proofs', proofPath));
+        request.files.add(
+          await http.MultipartFile.fromPath('proofs', proofPath),
+        );
       }
 
       final streamed = await request.send();
@@ -283,7 +304,10 @@ class EntryScreen extends StatelessWidget {
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
           FilledButton(
             onPressed: () async {
               await BackendConfig.save(controller.text);
@@ -322,9 +346,9 @@ class EntryScreen extends StatelessWidget {
                 Text(
                   'BookMyHospital',
                   style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                        color: const Color(0xFF134E4A),
-                      ),
+                    fontWeight: FontWeight.w700,
+                    color: const Color(0xFF134E4A),
+                  ),
                 ),
                 const SizedBox(height: 8),
                 const Text(
@@ -411,10 +435,9 @@ class _RoleCard extends StatelessWidget {
                   children: [
                     Text(
                       title,
-                      style: Theme.of(context)
-                          .textTheme
-                          .titleMedium
-                          ?.copyWith(fontWeight: FontWeight.w700),
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                     const SizedBox(height: 4),
                     Text(subtitle),
@@ -459,7 +482,8 @@ class _PatientAuthScreenState extends State<PatientAuthScreen> {
     setState(() => _loading = false);
     Navigator.of(context).pushReplacement(
       MaterialPageRoute<void>(
-        builder: (_) => PatientHomeScreen(patientName: name, patientEmail: email),
+        builder: (_) =>
+            PatientHomeScreen(patientName: name, patientEmail: email),
       ),
     );
   }
@@ -509,6 +533,7 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
   final ApiService _api = ApiService();
   List<HospitalInfo> _hospitals = [];
   bool _loading = true;
+  String _patientUniqueId = '';
   Timer? _pollTimer;
   io.Socket? _socket;
   DateTime? _lastSync;
@@ -516,16 +541,29 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
   @override
   void initState() {
     super.initState();
+    _initPatientId();
     _loadHospitals();
     _connectLive();
-    _pollTimer = Timer.periodic(const Duration(seconds: 4), (_) => _loadHospitals());
+    _pollTimer = Timer.periodic(
+      const Duration(seconds: 4),
+      (_) => _loadHospitals(),
+    );
+  }
+
+  Future<void> _initPatientId() async {
+    final id = await BackendConfig.getOrCreatePatientId();
+    if (!mounted) return;
+    setState(() => _patientUniqueId = id);
   }
 
   void _connectLive() {
     try {
       final socket = io.io(
         BackendConfig.baseUrl,
-        io.OptionBuilder().setTransports(['websocket']).disableAutoConnect().build(),
+        io.OptionBuilder()
+            .setTransports(['websocket'])
+            .disableAutoConnect()
+            .build(),
       );
       socket.onConnect((_) {});
       socket.on('overview:update', (_) => _loadHospitals());
@@ -552,6 +590,7 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
     final ok = await _api.createBooking(
       hospitalId: hospital.id,
       patientName: widget.patientName,
+      patientId: _patientUniqueId,
       type: type,
     );
     if (!mounted) return;
@@ -600,8 +639,9 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
                     TextFormField(
                       controller: controller,
                       maxLines: 3,
-                      validator: (v) =>
-                          (v == null || v.trim().isEmpty) ? 'Describe the issue' : null,
+                      validator: (v) => (v == null || v.trim().isEmpty)
+                          ? 'Describe the issue'
+                          : null,
                       decoration: const InputDecoration(
                         labelText: 'Description',
                         border: OutlineInputBorder(),
@@ -632,7 +672,9 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
                     const SizedBox(height: 8),
                     if (proofPaths.isNotEmpty)
                       Text(
-                        proofPaths.map((path) => path.split('/').last).join(', '),
+                        proofPaths
+                            .map((path) => path.split('/').last)
+                            .join(', '),
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
@@ -645,6 +687,7 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
                         final ok = await _api.submitComplaint(
                           hospitalId: hospital.id,
                           patientName: widget.patientName,
+                          patientId: _patientUniqueId,
                           description: controller.text.trim(),
                           proofPaths: proofPaths,
                         );
@@ -679,7 +722,10 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
       appBar: AppBar(
         title: const Text('Patient Dashboard'),
         actions: [
-          IconButton(onPressed: _loadHospitals, icon: const Icon(Icons.refresh)),
+          IconButton(
+            onPressed: _loadHospitals,
+            icon: const Icon(Icons.refresh),
+          ),
         ],
       ),
       body: _loading
@@ -690,7 +736,9 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
                 Card(
                   child: ListTile(
                     title: Text('Welcome, ${widget.patientName}'),
-                    subtitle: Text(widget.patientEmail),
+                    subtitle: Text(
+                      '${widget.patientEmail}\nUnique Patient ID: ${_patientUniqueId.isEmpty ? 'creating...' : _patientUniqueId}',
+                    ),
                   ),
                 ),
                 Card(
@@ -718,12 +766,13 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
                         children: [
                           Text(
                             h.name,
-                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                  fontWeight: FontWeight.bold,
-                                ),
+                            style: Theme.of(context).textTheme.titleMedium
+                                ?.copyWith(fontWeight: FontWeight.bold),
                           ),
                           const SizedBox(height: 4),
-                          Text('${h.location} • Rating ${h.avgReview.toStringAsFixed(1)}'),
+                          Text(
+                            '${h.location} • Rating ${h.avgReview.toStringAsFixed(1)}',
+                          ),
                           const SizedBox(height: 6),
                           Wrap(
                             spacing: 8,
@@ -785,10 +834,12 @@ class HospitalRegistrationScreen extends StatefulWidget {
   const HospitalRegistrationScreen({super.key});
 
   @override
-  State<HospitalRegistrationScreen> createState() => _HospitalRegistrationScreenState();
+  State<HospitalRegistrationScreen> createState() =>
+      _HospitalRegistrationScreenState();
 }
 
-class _HospitalRegistrationScreenState extends State<HospitalRegistrationScreen> {
+class _HospitalRegistrationScreenState
+    extends State<HospitalRegistrationScreen> {
   final _formKey = GlobalKey<FormState>();
   final _name = TextEditingController();
   final _email = TextEditingController();
@@ -870,7 +921,9 @@ class _HospitalRegistrationScreenState extends State<HospitalRegistrationScreen>
               FilledButton.icon(
                 onPressed: _submitting ? null : _submit,
                 icon: const Icon(Icons.verified_user),
-                label: Text(_submitting ? 'Submitting...' : 'Submit for Verification'),
+                label: Text(
+                  _submitting ? 'Submitting...' : 'Submit for Verification',
+                ),
               ),
               const SizedBox(height: 10),
               OutlinedButton(
@@ -932,7 +985,9 @@ class _HospitalLoginScreenState extends State<HospitalLoginScreen> {
 
     if (hospital == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Hospital not found or not approved yet.')),
+        const SnackBar(
+          content: Text('Hospital not found or not approved yet.'),
+        ),
       );
       return;
     }
@@ -1011,7 +1066,8 @@ class HospitalDashboardScreen extends StatefulWidget {
   final HospitalInfo hospital;
 
   @override
-  State<HospitalDashboardScreen> createState() => _HospitalDashboardScreenState();
+  State<HospitalDashboardScreen> createState() =>
+      _HospitalDashboardScreenState();
 }
 
 class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
@@ -1025,29 +1081,68 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
   List<dynamic> _bookings = [];
   io.Socket? _socket;
   Timer? _pollTimer;
+  Timer? _statusTimer;
   bool _loadingBookings = false;
   bool _saving = false;
+  String _accountStatus = 'approved';
 
   @override
   void initState() {
     super.initState();
+    _accountStatus = widget.hospital.status;
     _hospitalId = TextEditingController(text: widget.hospital.id);
-    _beds = TextEditingController(text: widget.hospital.bedsAvailable.toString());
+    _beds = TextEditingController(
+      text: widget.hospital.bedsAvailable.toString(),
+    );
     _icu = TextEditingController(text: widget.hospital.icuAvailable.toString());
     _ot = TextEditingController(text: widget.hospital.otAvailable.toString());
-    _doctors = TextEditingController(text: widget.hospital.doctorsAvailable.toString());
-    _surgeons = TextEditingController(text: widget.hospital.surgeonsAvailable.toString());
-    _wait = TextEditingController(text: widget.hospital.queueWaitMinutes.toString());
+    _doctors = TextEditingController(
+      text: widget.hospital.doctorsAvailable.toString(),
+    );
+    _surgeons = TextEditingController(
+      text: widget.hospital.surgeonsAvailable.toString(),
+    );
+    _wait = TextEditingController(
+      text: widget.hospital.queueWaitMinutes.toString(),
+    );
     _loadBookings();
+    _loadHospitalStatus();
     _connectLive();
-    _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) => _loadBookings());
+    _pollTimer = Timer.periodic(
+      const Duration(seconds: 3),
+      (_) => _loadBookings(),
+    );
+    _statusTimer = Timer.periodic(
+      const Duration(seconds: 10),
+      (_) => _loadHospitalStatus(),
+    );
+  }
+
+  Future<void> _loadHospitalStatus() async {
+    try {
+      final response = await http.get(
+        Uri.parse(
+          '${BackendConfig.baseUrl}/api/hospitals/${_hospitalId.text.trim()}',
+        ),
+      );
+      if (response.statusCode != 200) return;
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      final hospital = body['hospital'] as Map<String, dynamic>?;
+      if (hospital == null || !mounted) return;
+      setState(() {
+        _accountStatus = hospital['status']?.toString() ?? _accountStatus;
+      });
+    } catch (_) {}
   }
 
   void _connectLive() {
     try {
       final socket = io.io(
         BackendConfig.baseUrl,
-        io.OptionBuilder().setTransports(['websocket']).disableAutoConnect().build(),
+        io.OptionBuilder()
+            .setTransports(['websocket'])
+            .disableAutoConnect()
+            .build(),
       );
       socket.on('booking:created', (_) => _loadBookings());
       socket.on('hospital:availability-updated', (_) => _loadBookings());
@@ -1062,7 +1157,9 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
     _loadingBookings = true;
     try {
       final response = await http.get(
-        Uri.parse('${BackendConfig.baseUrl}/api/hospitals/${_hospitalId.text.trim()}/bookings'),
+        Uri.parse(
+          '${BackendConfig.baseUrl}/api/hospitals/${_hospitalId.text.trim()}/bookings',
+        ),
       );
       if (response.statusCode == 200) {
         final body = jsonDecode(response.body) as Map<String, dynamic>;
@@ -1078,6 +1175,7 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
   @override
   void dispose() {
     _pollTimer?.cancel();
+    _statusTimer?.cancel();
     _socket?.dispose();
     _hospitalId.dispose();
     _beds.dispose();
@@ -1090,10 +1188,23 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
   }
 
   Future<void> _save() async {
+    if (_accountStatus != 'approved') {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Account is not active. Availability update is locked.',
+          ),
+        ),
+      );
+      return;
+    }
     setState(() => _saving = true);
     try {
       await http.patch(
-        Uri.parse('${BackendConfig.baseUrl}/api/hospitals/${_hospitalId.text.trim()}/availability'),
+        Uri.parse(
+          '${BackendConfig.baseUrl}/api/hospitals/${_hospitalId.text.trim()}/availability',
+        ),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'bedsAvailable': int.tryParse(_beds.text) ?? 0,
@@ -1105,9 +1216,9 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
         }),
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Availability updated.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Availability updated.')));
     } finally {
       if (mounted) {
         setState(() => _saving = false);
@@ -1117,12 +1228,23 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final approvalColor = widget.hospital.status == 'approved' ? const Color(0xFF16A34A) : const Color(0xFFF59E0B);
+    final approvalColor = _accountStatus == 'approved'
+        ? const Color(0xFF16A34A)
+        : const Color(0xFFF59E0B);
     return Scaffold(
       appBar: AppBar(title: const Text('Hospital Dashboard (Approved)')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          if (_accountStatus != 'approved')
+            Card(
+              color: const Color(0xFFFEE2E2),
+              child: const ListTile(
+                leading: Icon(Icons.lock_outline, color: Colors.red),
+                title: Text('Account is been deactive by admin'),
+                subtitle: Text('File requestion with proof for re activation'),
+              ),
+            ),
           Card(
             color: const Color(0xFFE0F2FE),
             child: Padding(
@@ -1132,19 +1254,25 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
                 children: [
                   Text(
                     widget.hospital.name,
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                   const SizedBox(height: 4),
-                  Text('${widget.hospital.location} • ${widget.hospital.email}'),
+                  Text(
+                    '${widget.hospital.location} • ${widget.hospital.email}',
+                  ),
                   const SizedBox(height: 10),
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
                     children: [
                       Chip(
-                        label: Text(widget.hospital.status.toUpperCase()),
+                        label: Text(_accountStatus.toUpperCase()),
                         backgroundColor: approvalColor.withValues(alpha: 0.14),
-                        side: BorderSide(color: approvalColor.withValues(alpha: 0.35)),
+                        side: BorderSide(
+                          color: approvalColor.withValues(alpha: 0.35),
+                        ),
                       ),
                       Chip(
                         label: Text('Bookings ${_bookings.length}'),
@@ -1185,17 +1313,22 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
           _nField(_wait, 'Estimated Wait (minutes)'),
           const SizedBox(height: 10),
           FilledButton(
-            onPressed: _saving ? null : _save,
+            onPressed: (_saving || _accountStatus != 'approved') ? null : _save,
             child: Text(_saving ? 'Saving...' : 'Update Live Availability'),
           ),
           const SizedBox(height: 18),
-          Text('Live bookings for ${_hospitalId.text.trim()}', style: Theme.of(context).textTheme.titleMedium),
+          Text(
+            'Live bookings for ${_hospitalId.text.trim()}',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
           const SizedBox(height: 8),
           if (_bookings.isEmpty)
             const Card(
               child: ListTile(
                 title: Text('No bookings yet'),
-                subtitle: Text('When patient books Bed / Emergency Bed / Appointment, it will appear here.'),
+                subtitle: Text(
+                  'When patient books Bed / Emergency Bed / Appointment, it will appear here.',
+                ),
               ),
             )
           else
@@ -1203,8 +1336,12 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
               (b) => Card(
                 child: ListTile(
                   leading: const Icon(Icons.event_available),
-                  title: Text('${b['type'] ?? 'Booking'} • ${b['patientName'] ?? ''}'),
-                  subtitle: Text('Priority: ${b['priority'] ?? 'normal'} • ${b['status'] ?? ''}'),
+                  title: Text(
+                    '${b['type'] ?? 'Booking'} • ${b['patientName'] ?? ''}',
+                  ),
+                  subtitle: Text(
+                    'Priority: ${b['priority'] ?? 'normal'} • ${b['status'] ?? ''}',
+                  ),
                   trailing: Text(b['createdAt']?.toString() ?? ''),
                 ),
               ),
@@ -1241,7 +1378,9 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
               const SizedBox(height: 8),
               Text(
                 value,
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ],
           ),

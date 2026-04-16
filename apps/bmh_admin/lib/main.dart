@@ -72,35 +72,73 @@ class PendingHospital {
   final String location;
 
   factory PendingHospital.fromJson(Map<String, dynamic> map) => PendingHospital(
-        id: map['id']?.toString() ?? '',
-        name: map['name']?.toString() ?? '',
-        email: map['email']?.toString() ?? '',
-        location: map['location']?.toString() ?? '',
-      );
+    id: map['id']?.toString() ?? '',
+    name: map['name']?.toString() ?? '',
+    email: map['email']?.toString() ?? '',
+    location: map['location']?.toString() ?? '',
+  );
 }
 
 class Complaint {
   Complaint({
     required this.id,
     required this.hospitalId,
+    required this.hospitalName,
+    required this.patientId,
     required this.patientName,
     required this.description,
     required this.status,
+    required this.proofUrls,
+    required this.createdAt,
   });
 
   final String id;
   final String hospitalId;
+  final String hospitalName;
+  final String patientId;
   final String patientName;
   final String description;
   final String status;
+  final List<String> proofUrls;
+  final String createdAt;
 
   factory Complaint.fromJson(Map<String, dynamic> map) => Complaint(
-        id: map['id']?.toString() ?? '',
-        hospitalId: map['hospitalId']?.toString() ?? '',
-        patientName: map['patientName']?.toString() ?? '',
-        description: map['description']?.toString() ?? '',
-        status: map['status']?.toString() ?? 'open',
-      );
+    id: map['id']?.toString() ?? '',
+    hospitalId: map['hospitalId']?.toString() ?? '',
+    hospitalName: map['hospitalName']?.toString() ?? 'Unknown Hospital',
+    patientId: map['patientId']?.toString() ?? 'not-provided',
+    patientName: map['patientName']?.toString() ?? '',
+    description: map['description']?.toString() ?? '',
+    status: map['status']?.toString() ?? 'open',
+    proofUrls: (map['proofUrls'] as List<dynamic>? ?? [])
+        .map((e) => e.toString())
+        .toList(),
+    createdAt: map['createdAt']?.toString() ?? '',
+  );
+}
+
+class HospitalAccount {
+  HospitalAccount({
+    required this.id,
+    required this.name,
+    required this.email,
+    required this.location,
+    required this.status,
+  });
+
+  final String id;
+  final String name;
+  final String email;
+  final String location;
+  final String status;
+
+  factory HospitalAccount.fromJson(Map<String, dynamic> map) => HospitalAccount(
+    id: map['id']?.toString() ?? '',
+    name: map['name']?.toString() ?? '',
+    email: map['email']?.toString() ?? '',
+    location: map['location']?.toString() ?? '',
+    status: map['status']?.toString() ?? 'unknown',
+  );
 }
 
 class AdminLoginScreen extends StatefulWidget {
@@ -127,7 +165,10 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
           FilledButton(
             onPressed: () async {
               await BackendConfig.save(controller.text);
@@ -218,10 +259,10 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   bool _loading = true;
   List<PendingHospital> _pending = [];
   List<Complaint> _complaints = [];
+  List<HospitalAccount> _deactivatedHospitals = [];
   Map<String, dynamic> _usersByLocation = {};
   int _approvedCount = 0;
   int _bookingCount = 0;
-  Timer? _pollTimer;
   io.Socket? _socket;
 
   @override
@@ -229,14 +270,16 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     super.initState();
     _load();
     _connectLive();
-    _pollTimer = Timer.periodic(const Duration(seconds: 4), (_) => _load());
   }
 
   void _connectLive() {
     try {
       final socket = io.io(
         BackendConfig.baseUrl,
-        io.OptionBuilder().setTransports(['websocket']).disableAutoConnect().build(),
+        io.OptionBuilder()
+            .setTransports(['websocket'])
+            .disableAutoConnect()
+            .build(),
       );
       for (final event in [
         'overview:update',
@@ -259,12 +302,27 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     setState(() => _loading = true);
 
     try {
-      final pendingRes = await http.get(
-        Uri.parse('${BackendConfig.baseUrl}/api/hospitals?status=pending'),
-      );
-      final overviewRes = await http.get(
-        Uri.parse('${BackendConfig.baseUrl}/api/admin/overview'),
-      );
+      final results = await Future.wait([
+        http.get(
+          Uri.parse('${BackendConfig.baseUrl}/api/hospitals?status=pending'),
+        ),
+        http.get(Uri.parse('${BackendConfig.baseUrl}/api/admin/overview')),
+        http.get(
+          Uri.parse(
+            '${BackendConfig.baseUrl}/api/hospitals?status=deactivated',
+          ),
+        ),
+      ]);
+
+      final pendingRes = results[0];
+      final overviewRes = results[1];
+      final deactivatedRes = results[2];
+
+      if (pendingRes.statusCode != 200 ||
+          overviewRes.statusCode != 200 ||
+          deactivatedRes.statusCode != 200) {
+        throw Exception('Failed to load admin dashboard data');
+      }
 
       final pendingJson = jsonDecode(pendingRes.body) as Map<String, dynamic>;
       final pending = (pendingJson['hospitals'] as List<dynamic>? ?? [])
@@ -272,15 +330,26 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           .toList();
 
       final overview = jsonDecode(overviewRes.body) as Map<String, dynamic>;
+      final deactivatedJson =
+          jsonDecode(deactivatedRes.body) as Map<String, dynamic>;
+      final deactivatedHospitals =
+          (deactivatedJson['hospitals'] as List<dynamic>? ?? [])
+              .map((e) => HospitalAccount.fromJson(e as Map<String, dynamic>))
+              .toList();
+
+      final deactivatedIds = deactivatedHospitals.map((h) => h.id).toSet();
       final complaints = (overview['complaints'] as List<dynamic>? ?? [])
           .map((e) => Complaint.fromJson(e as Map<String, dynamic>))
+          .where((c) => !deactivatedIds.contains(c.hospitalId))
           .toList();
 
       if (!mounted) return;
       setState(() {
         _pending = pending;
         _complaints = complaints;
-        _usersByLocation = overview['usersByLocation'] as Map<String, dynamic>? ?? {};
+        _deactivatedHospitals = deactivatedHospitals;
+        _usersByLocation =
+            overview['usersByLocation'] as Map<String, dynamic>? ?? {};
         _approvedCount = (overview['hospitalsApproved'] ?? 0) as int;
         _bookingCount = (overview['bookings'] as List<dynamic>? ?? []).length;
         _loading = false;
@@ -289,7 +358,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       if (!mounted) return;
       setState(() => _loading = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Backend not reachable. Start backend service.')),
+        const SnackBar(
+          content: Text('Backend not reachable. Start backend service.'),
+        ),
       );
     }
   }
@@ -305,20 +376,113 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
 
   @override
   void dispose() {
-    _pollTimer?.cancel();
     _socket?.dispose();
     super.dispose();
   }
 
   Future<void> _discipline(String hospitalId, String action) async {
-    await http.patch(
-      Uri.parse('${BackendConfig.baseUrl}/api/admin/hospitals/$hospitalId/discipline'),
+    final response = await http.patch(
+      Uri.parse(
+        '${BackendConfig.baseUrl}/api/admin/hospitals/$hospitalId/discipline',
+      ),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'action': action}),
     );
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Hospital action applied: $action')),
+    if (response.statusCode == 200) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Hospital action applied: $action')),
+      );
+      await _load();
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not apply action right now.')),
+      );
+    }
+  }
+
+  bool _isImageUrl(String url) {
+    final lower = url.toLowerCase();
+    return lower.endsWith('.png') ||
+        lower.endsWith('.jpg') ||
+        lower.endsWith('.jpeg') ||
+        lower.endsWith('.webp') ||
+        lower.endsWith('.gif');
+  }
+
+  Future<void> _openComplaintDetails(Complaint complaint) async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Complaint • ${complaint.hospitalName}'),
+        content: SizedBox(
+          width: 520,
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Complaint ID: ${complaint.id}'),
+                Text('Patient Unique ID: ${complaint.patientId}'),
+                Text('Patient Name: ${complaint.patientName}'),
+                Text('Hospital ID: ${complaint.hospitalId}'),
+                const SizedBox(height: 8),
+                Text(complaint.description),
+                const SizedBox(height: 12),
+                Text('Attached Proofs (${complaint.proofUrls.length})'),
+                const SizedBox(height: 8),
+                if (complaint.proofUrls.isEmpty)
+                  const Text('No media attachment found.')
+                else
+                  ...complaint.proofUrls.map(
+                    (url) => Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SelectableText(
+                            url,
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                          const SizedBox(height: 6),
+                          if (_isImageUrl(url))
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: Image.network(
+                                url,
+                                height: 140,
+                                width: 240,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, __, ___) =>
+                                    const Text('Preview unavailable'),
+                              ),
+                            )
+                          else
+                            const Row(
+                              children: [
+                                Icon(Icons.videocam_outlined),
+                                SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Video/file link available above',
+                                  ),
+                                ),
+                              ],
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -347,7 +511,10 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                   ],
                 ),
                 const SizedBox(height: 12),
-                Text('Hospital Approval Queue', style: Theme.of(context).textTheme.titleMedium),
+                Text(
+                  'Hospital Approval Queue',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
                 const SizedBox(height: 8),
                 ..._pending.map(
                   (h) => Card(
@@ -371,7 +538,53 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                Text('Users by Location', style: Theme.of(context).textTheme.titleMedium),
+                Text(
+                  'Deactivated Accounts',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 8),
+                if (_deactivatedHospitals.isEmpty)
+                  const Card(
+                    child: ListTile(
+                      title: Text('No deactivated accounts'),
+                      subtitle: Text(
+                        'Deactivated hospitals will appear here for Reactivate or Ban actions.',
+                      ),
+                    ),
+                  )
+                else
+                  ..._deactivatedHospitals.map(
+                    (h) => Card(
+                      child: ListTile(
+                        title: Text(h.name),
+                        subtitle: Text('${h.location} • ${h.email}'),
+                        trailing: Wrap(
+                          spacing: 8,
+                          children: [
+                            FilledButton(
+                              style: FilledButton.styleFrom(
+                                backgroundColor: Colors.green,
+                              ),
+                              onPressed: () => _discipline(h.id, 'activate'),
+                              child: const Text('Activate'),
+                            ),
+                            FilledButton(
+                              style: FilledButton.styleFrom(
+                                backgroundColor: Colors.red,
+                              ),
+                              onPressed: () => _discipline(h.id, 'ban'),
+                              child: const Text('Ban'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                const SizedBox(height: 12),
+                Text(
+                  'Users by Location',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
                 const SizedBox(height: 8),
                 Card(
                   child: Padding(
@@ -390,7 +603,10 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                Text('Complaint Actions', style: Theme.of(context).textTheme.titleMedium),
+                Text(
+                  'Complaint Inbox',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
                 const SizedBox(height: 8),
                 ..._complaints.map(
                   (c) => Card(
@@ -399,20 +615,34 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('Hospital: ${c.hospitalId}'),
-                          Text('Patient: ${c.patientName}'),
+                          Text('Hospital: ${c.hospitalName} (${c.hospitalId})'),
+                          Text(
+                            'Patient: ${c.patientName} • ID: ${c.patientId}',
+                          ),
                           const SizedBox(height: 4),
                           Text(c.description),
+                          if (c.proofUrls.isNotEmpty) ...[
+                            const SizedBox(height: 6),
+                            Text(
+                              'Media attached: ${c.proofUrls.length} file(s)',
+                            ),
+                          ],
                           const SizedBox(height: 8),
                           Wrap(
                             spacing: 8,
                             children: [
+                              FilledButton.tonal(
+                                onPressed: () => _openComplaintDetails(c),
+                                child: const Text('Open Complaint'),
+                              ),
                               OutlinedButton(
-                                onPressed: () => _discipline(c.hospitalId, 'deactivate'),
+                                onPressed: () =>
+                                    _discipline(c.hospitalId, 'deactivate'),
                                 child: const Text('Deactivate Hospital'),
                               ),
                               FilledButton(
-                                onPressed: () => _discipline(c.hospitalId, 'ban'),
+                                onPressed: () =>
+                                    _discipline(c.hospitalId, 'ban'),
                                 child: const Text('Ban Permanently'),
                               ),
                             ],
@@ -436,7 +666,13 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(value, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w700)),
+              Text(
+                value,
+                style: const TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
               Text(label),
             ],
           ),
