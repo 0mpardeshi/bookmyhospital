@@ -132,7 +132,53 @@ class HospitalInfo {
   }
 }
 
+class PatientNotification {
+  PatientNotification({
+    required this.id,
+    required this.title,
+    required this.message,
+    required this.type,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String title;
+  final String message;
+  final String type;
+  final String createdAt;
+
+  factory PatientNotification.fromJson(Map<String, dynamic> json) {
+    return PatientNotification(
+      id: json['id']?.toString() ?? '',
+      title: json['title']?.toString() ?? 'Notification',
+      message: json['message']?.toString() ?? '',
+      type: json['type']?.toString() ?? 'info',
+      createdAt: json['createdAt']?.toString() ?? '',
+    );
+  }
+}
+
 class ApiService {
+  static const _hospitalsCacheKey = 'bookmyhospital_cached_hospitals';
+  static String _notificationsCacheKey(String patientId) =>
+      'bookmyhospital_cached_notifications_$patientId';
+
+  Future<void> _cacheJson(String key, dynamic value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(key, jsonEncode(value));
+  }
+
+  Future<Map<String, dynamic>?> _readCachedMap(String key) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(key);
+    if (raw == null || raw.trim().isEmpty) return null;
+    try {
+      return jsonDecode(raw) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<List<HospitalInfo>> getApprovedHospitals() async {
     try {
       final uri = Uri.parse(
@@ -140,26 +186,37 @@ class ApiService {
       );
       final response = await http.get(uri).timeout(const Duration(seconds: 8));
       if (response.statusCode != 200) {
-        return _fallbackHospitals;
+        final cached = await _readCachedMap(_hospitalsCacheKey);
+        final cachedList = (cached?['hospitals'] as List<dynamic>? ?? [])
+            .map((item) => HospitalInfo.fromJson(item as Map<String, dynamic>))
+            .toList();
+        return cachedList.isNotEmpty ? cachedList : _fallbackHospitals;
       }
       final map = jsonDecode(response.body) as Map<String, dynamic>;
+      await _cacheJson(_hospitalsCacheKey, map);
       final list = (map['hospitals'] as List<dynamic>? ?? [])
           .map((item) => HospitalInfo.fromJson(item as Map<String, dynamic>))
           .toList();
       return list;
     } catch (_) {
-      return _fallbackHospitals;
+      final cached = await _readCachedMap(_hospitalsCacheKey);
+      final cachedList = (cached?['hospitals'] as List<dynamic>? ?? [])
+          .map((item) => HospitalInfo.fromJson(item as Map<String, dynamic>))
+          .toList();
+      return cachedList.isNotEmpty ? cachedList : _fallbackHospitals;
     }
   }
 
   Future<bool> submitHospitalRegistration(Map<String, dynamic> payload) async {
     try {
       final uri = Uri.parse('${BackendConfig.baseUrl}/api/hospitals/register');
-      final response = await http.post(
-        uri,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(payload),
-      );
+      final response = await http
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(payload),
+          )
+          .timeout(const Duration(seconds: 12));
       return response.statusCode == 201;
     } catch (_) {
       return false;
@@ -169,11 +226,13 @@ class ApiService {
   Future<HospitalInfo?> loginHospital(String email) async {
     try {
       final uri = Uri.parse('${BackendConfig.baseUrl}/api/hospitals/auth');
-      final response = await http.post(
-        uri,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'email': email}),
-      );
+      final response = await http
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'email': email}),
+          )
+          .timeout(const Duration(seconds: 10));
       if (response.statusCode != 200) {
         return null;
       }
@@ -194,16 +253,18 @@ class ApiService {
   }) async {
     try {
       final uri = Uri.parse('${BackendConfig.baseUrl}/api/bookings');
-      final response = await http.post(
-        uri,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'hospitalId': hospitalId,
-          'patientName': patientName,
-          'patientId': patientId,
-          'type': type,
-        }),
-      );
+      final response = await http
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'hospitalId': hospitalId,
+              'patientName': patientName,
+              'patientId': patientId,
+              'type': type,
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
       return response.statusCode == 201;
     } catch (_) {
       return false;
@@ -232,11 +293,70 @@ class ApiService {
         );
       }
 
-      final streamed = await request.send();
+      final streamed = await request.send().timeout(
+        const Duration(seconds: 20),
+      );
       return streamed.statusCode == 201;
     } catch (_) {
       return false;
     }
+  }
+
+  Future<List<PatientNotification>> getPatientNotifications(
+    String patientId,
+  ) async {
+    try {
+      final uri = Uri.parse(
+        '${BackendConfig.baseUrl}/api/patients/$patientId/notifications',
+      );
+      final response = await http.get(uri).timeout(const Duration(seconds: 8));
+      if (response.statusCode != 200) {
+        final cached = await _readCachedMap(_notificationsCacheKey(patientId));
+        return (cached?['notifications'] as List<dynamic>? ?? [])
+            .map(
+              (item) =>
+                  PatientNotification.fromJson(item as Map<String, dynamic>),
+            )
+            .toList();
+      }
+      final map = jsonDecode(response.body) as Map<String, dynamic>;
+      await _cacheJson(_notificationsCacheKey(patientId), map);
+      return (map['notifications'] as List<dynamic>? ?? [])
+          .map(
+            (item) =>
+                PatientNotification.fromJson(item as Map<String, dynamic>),
+          )
+          .toList();
+    } catch (_) {
+      final cached = await _readCachedMap(_notificationsCacheKey(patientId));
+      return (cached?['notifications'] as List<dynamic>? ?? [])
+          .map(
+            (item) =>
+                PatientNotification.fromJson(item as Map<String, dynamic>),
+          )
+          .toList();
+    }
+  }
+
+  Future<String> askAiHelp(String message, {required bool lowDataMode}) async {
+    try {
+      final uri = Uri.parse('${BackendConfig.baseUrl}/api/ai/help');
+      final response = await http
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'message': message, 'lowDataMode': lowDataMode}),
+          )
+          .timeout(const Duration(seconds: 12));
+      if (response.statusCode == 200) {
+        final map = jsonDecode(response.body) as Map<String, dynamic>;
+        return map['reply']?.toString() ?? 'No response from assistant.';
+      }
+    } catch (_) {}
+
+    return lowDataMode
+        ? 'Low-network fallback:\n• Retry in a few seconds\n• Use refresh button\n• For emergency: call local emergency now'
+        : 'Assistant is temporarily offline due to low network. Please retry, or use manual booking/complaint actions from dashboard.';
   }
 }
 
@@ -532,9 +652,11 @@ class PatientHomeScreen extends StatefulWidget {
 class _PatientHomeScreenState extends State<PatientHomeScreen> {
   final ApiService _api = ApiService();
   List<HospitalInfo> _hospitals = [];
+  List<PatientNotification> _notifications = [];
   bool _loading = true;
   String _patientUniqueId = '';
   Timer? _pollTimer;
+  Timer? _notificationPollTimer;
   io.Socket? _socket;
   DateTime? _lastSync;
 
@@ -548,12 +670,17 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
       const Duration(seconds: 12),
       (_) => _loadHospitals(),
     );
+    _notificationPollTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => _loadNotifications(),
+    );
   }
 
   Future<void> _initPatientId() async {
     final id = await BackendConfig.getOrCreatePatientId();
     if (!mounted) return;
     setState(() => _patientUniqueId = id);
+    await _loadNotifications();
   }
 
   void _connectLive() {
@@ -569,6 +696,26 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
       socket.on('overview:update', (_) => _loadHospitals());
       socket.on('hospital:availability-updated', (_) => _loadHospitals());
       socket.on('booking:created', (_) => _loadHospitals());
+      socket.on('patient:notification', (payload) {
+        if (payload is! Map<String, dynamic>) return;
+        final targetId = payload['patientId']?.toString() ?? '';
+        if (targetId.isEmpty || targetId != _patientUniqueId) return;
+        final notification = PatientNotification.fromJson(payload);
+        if (!mounted) return;
+        setState(() {
+          _notifications = [notification, ..._notifications]
+              .fold<List<PatientNotification>>([], (acc, item) {
+                if (acc.any((existing) => existing.id == item.id)) return acc;
+                acc.add(item);
+                return acc;
+              })
+              .take(30)
+              .toList();
+        });
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(notification.message)));
+      });
       socket.connect();
       _socket = socket;
     } catch (_) {
@@ -584,6 +731,24 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
       _loading = false;
       _lastSync = DateTime.now();
     });
+  }
+
+  Future<void> _loadNotifications() async {
+    if (_patientUniqueId.trim().isEmpty) return;
+    final notifications = await _api.getPatientNotifications(_patientUniqueId);
+    if (!mounted) return;
+    setState(() {
+      _notifications = notifications.take(30).toList();
+    });
+  }
+
+  void _openAiAssistant() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            AiHelpScreen(apiService: _api, patientName: widget.patientName),
+      ),
+    );
   }
 
   Future<void> _book(HospitalInfo hospital, String type) async {
@@ -608,6 +773,7 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
   @override
   void dispose() {
     _pollTimer?.cancel();
+    _notificationPollTimer?.cancel();
     _socket?.dispose();
     super.dispose();
   }
@@ -723,6 +889,11 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
         title: const Text('Patient Dashboard'),
         actions: [
           IconButton(
+            tooltip: 'AI Help',
+            onPressed: _openAiAssistant,
+            icon: const Icon(Icons.smart_toy_outlined),
+          ),
+          IconButton(
             onPressed: _loadHospitals,
             icon: const Icon(Icons.refresh),
           ),
@@ -754,6 +925,36 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
                     ),
                   ),
                 ),
+                if (_notifications.isNotEmpty)
+                  Card(
+                    color: const Color(0xFFFFF7ED),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Important Notifications',
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                          const SizedBox(height: 8),
+                          ..._notifications
+                              .take(3)
+                              .map(
+                                (n) => ListTile(
+                                  dense: true,
+                                  contentPadding: EdgeInsets.zero,
+                                  leading: const Icon(
+                                    Icons.notifications_active_outlined,
+                                  ),
+                                  title: Text(n.title),
+                                  subtitle: Text(n.message),
+                                ),
+                              ),
+                        ],
+                      ),
+                    ),
+                  ),
                 ..._hospitals.map(
                   (h) => Card(
                     shape: RoundedRectangleBorder(
@@ -826,6 +1027,146 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
       label: Text(label),
       backgroundColor: const Color(0xFFCCFBF1),
       side: BorderSide.none,
+    );
+  }
+}
+
+class AiHelpScreen extends StatefulWidget {
+  const AiHelpScreen({
+    super.key,
+    required this.apiService,
+    required this.patientName,
+  });
+
+  final ApiService apiService;
+  final String patientName;
+
+  @override
+  State<AiHelpScreen> createState() => _AiHelpScreenState();
+}
+
+class _AiHelpScreenState extends State<AiHelpScreen> {
+  final TextEditingController _messageController = TextEditingController();
+  final List<Map<String, String>> _messages = [
+    {
+      'role': 'ai',
+      'text':
+          'Hi! I am your BookMyHospital AI helper. Ask for emergency flow, booking help, or complaint guidance.',
+    },
+  ];
+
+  bool _sending = false;
+  bool _lowDataMode = true;
+
+  @override
+  void dispose() {
+    _messageController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _send() async {
+    final text = _messageController.text.trim();
+    if (text.isEmpty || _sending) return;
+    setState(() {
+      _sending = true;
+      _messages.add({'role': 'user', 'text': text});
+      _messageController.clear();
+    });
+
+    final reply = await widget.apiService.askAiHelp(
+      text,
+      lowDataMode: _lowDataMode,
+    );
+
+    if (!mounted) return;
+    setState(() {
+      _messages.add({'role': 'ai', 'text': reply});
+      _sending = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('AI Help Assistant'),
+        actions: [
+          Row(
+            children: [
+              const Text('Low-data'),
+              Switch(
+                value: _lowDataMode,
+                onChanged: (value) => setState(() => _lowDataMode = value),
+              ),
+            ],
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(10),
+            color: const Color(0xFFE0F2FE),
+            child: Text(
+              'Hello ${widget.patientName}. In low network zone this assistant auto-falls back to compact guidance.',
+            ),
+          ),
+          Expanded(
+            child: ListView.builder(
+              padding: const EdgeInsets.all(12),
+              itemCount: _messages.length,
+              itemBuilder: (context, index) {
+                final item = _messages[index];
+                final isUser = item['role'] == 'user';
+                return Align(
+                  alignment: isUser
+                      ? Alignment.centerRight
+                      : Alignment.centerLeft,
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(vertical: 6),
+                    padding: const EdgeInsets.all(12),
+                    constraints: const BoxConstraints(maxWidth: 320),
+                    decoration: BoxDecoration(
+                      color: isUser
+                          ? const Color(0xFFCCFBF1)
+                          : const Color(0xFFF3F4F6),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(item['text'] ?? ''),
+                  ),
+                );
+              },
+            ),
+          ),
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.all(10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _messageController,
+                      minLines: 1,
+                      maxLines: 3,
+                      decoration: const InputDecoration(
+                        hintText: 'Ask AI: emergency, booking, complaint... ',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: _sending ? null : _send,
+                    child: Text(_sending ? '...' : 'Send'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

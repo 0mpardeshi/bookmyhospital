@@ -195,11 +195,13 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
     });
 
     try {
-      final response = await http.post(
-        Uri.parse('${BackendConfig.baseUrl}/api/admin/auth'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'accessCode': _pinController.text.trim()}),
-      );
+      final response = await http
+          .post(
+            Uri.parse('${BackendConfig.baseUrl}/api/admin/auth'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'accessCode': _pinController.text.trim()}),
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (!mounted) return;
       if (response.statusCode == 200) {
@@ -281,6 +283,7 @@ class AdminDashboardScreen extends StatefulWidget {
 }
 
 class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
+  static const _dashboardCacheKey = 'bookmyhospital_admin_cached_dashboard';
   bool _loading = true;
   List<PendingHospital> _pending = [];
   List<Complaint> _complaints = [];
@@ -327,16 +330,24 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     setState(() => _loading = true);
 
     try {
-      final results = await Future.wait([
-        http.get(
-          Uri.parse('${BackendConfig.baseUrl}/api/hospitals?status=pending'),
-        ),
-        http.get(Uri.parse('${BackendConfig.baseUrl}/api/admin/overview')),
-        http.get(
-          Uri.parse(
-            '${BackendConfig.baseUrl}/api/hospitals?status=deactivated',
-          ),
-        ),
+      final results = await Future.wait<http.Response>([
+        http
+            .get(
+              Uri.parse(
+                '${BackendConfig.baseUrl}/api/hospitals?status=pending',
+              ),
+            )
+            .timeout(const Duration(seconds: 8)),
+        http
+            .get(Uri.parse('${BackendConfig.baseUrl}/api/admin/overview'))
+            .timeout(const Duration(seconds: 8)),
+        http
+            .get(
+              Uri.parse(
+                '${BackendConfig.baseUrl}/api/hospitals?status=deactivated',
+              ),
+            )
+            .timeout(const Duration(seconds: 8)),
       ]);
 
       final pendingRes = results[0];
@@ -357,6 +368,17 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       final overview = jsonDecode(overviewRes.body) as Map<String, dynamic>;
       final deactivatedJson =
           jsonDecode(deactivatedRes.body) as Map<String, dynamic>;
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        _dashboardCacheKey,
+        jsonEncode({
+          'pending': pendingJson,
+          'overview': overview,
+          'deactivated': deactivatedJson,
+        }),
+      );
+
       final deactivatedHospitals =
           (deactivatedJson['hospitals'] as List<dynamic>? ?? [])
               .map((e) => HospitalAccount.fromJson(e as Map<String, dynamic>))
@@ -380,22 +402,72 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         _loading = false;
       });
     } catch (_) {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_dashboardCacheKey);
+      if (raw != null && raw.trim().isNotEmpty) {
+        try {
+          final cached = jsonDecode(raw) as Map<String, dynamic>;
+          final pendingJson = cached['pending'] as Map<String, dynamic>? ?? {};
+          final overview = cached['overview'] as Map<String, dynamic>? ?? {};
+          final deactivatedJson =
+              cached['deactivated'] as Map<String, dynamic>? ?? {};
+
+          final pending = (pendingJson['hospitals'] as List<dynamic>? ?? [])
+              .map((e) => PendingHospital.fromJson(e as Map<String, dynamic>))
+              .toList();
+          final deactivatedHospitals =
+              (deactivatedJson['hospitals'] as List<dynamic>? ?? [])
+                  .map(
+                    (e) => HospitalAccount.fromJson(e as Map<String, dynamic>),
+                  )
+                  .toList();
+          final deactivatedIds = deactivatedHospitals.map((h) => h.id).toSet();
+          final complaints = (overview['complaints'] as List<dynamic>? ?? [])
+              .map((e) => Complaint.fromJson(e as Map<String, dynamic>))
+              .where((c) => !deactivatedIds.contains(c.hospitalId))
+              .toList();
+
+          if (!mounted) return;
+          setState(() {
+            _pending = pending;
+            _complaints = complaints;
+            _deactivatedHospitals = deactivatedHospitals;
+            _usersByLocation =
+                overview['usersByLocation'] as Map<String, dynamic>? ?? {};
+            _approvedCount = (overview['hospitalsApproved'] ?? 0) as int;
+            _bookingCount =
+                (overview['bookings'] as List<dynamic>? ?? []).length;
+            _loading = false;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Low network detected. Showing cached admin data.'),
+            ),
+          );
+          return;
+        } catch (_) {}
+      }
+
       if (!mounted) return;
       setState(() => _loading = false);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Backend not reachable. Start backend service.'),
+          content: Text('Backend not reachable and no cache available.'),
         ),
       );
     }
   }
 
   Future<void> _review(PendingHospital hospital, String action) async {
-    await http.patch(
-      Uri.parse('${BackendConfig.baseUrl}/api/hospitals/${hospital.id}/status'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'action': action}),
-    );
+    await http
+        .patch(
+          Uri.parse(
+            '${BackendConfig.baseUrl}/api/hospitals/${hospital.id}/status',
+          ),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'action': action}),
+        )
+        .timeout(const Duration(seconds: 10));
     await _load();
   }
 
@@ -406,13 +478,15 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   }
 
   Future<void> _discipline(String hospitalId, String action) async {
-    final response = await http.patch(
-      Uri.parse(
-        '${BackendConfig.baseUrl}/api/admin/hospitals/$hospitalId/discipline',
-      ),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'action': action}),
-    );
+    final response = await http
+        .patch(
+          Uri.parse(
+            '${BackendConfig.baseUrl}/api/admin/hospitals/$hospitalId/discipline',
+          ),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'action': action}),
+        )
+        .timeout(const Duration(seconds: 10));
     if (!mounted) return;
     if (response.statusCode == 200) {
       ScaffoldMessenger.of(context).showSnackBar(

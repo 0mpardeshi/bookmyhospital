@@ -22,6 +22,8 @@ const {
   listBookings,
   createComplaint,
   listComplaints,
+  createNotification,
+  listPatientNotifications,
   disciplineHospital,
   overview,
   hospitalAuth,
@@ -115,6 +117,89 @@ function respondNotFound(res, message) {
   return res.status(404).json({ error: message || 'Not found' });
 }
 
+function hasUsableSecret(value) {
+  const key = String(value || '').trim();
+  if (!key) return false;
+  if (key.includes('replace_with_') || key.includes('your_')) return false;
+  return true;
+}
+
+function buildAiSystemPrompt(lowDataMode) {
+  return [
+    'You are BookMyHospital AI assistant.',
+    'Give practical medical system guidance, not diagnosis.',
+    'Prioritize emergency triage, hospital booking guidance, complaint and safety workflow.',
+    lowDataMode
+      ? 'Use very short responses: max 3 bullet points, compact language.'
+      : 'Use concise and clear responses with actionable steps.',
+  ].join(' ');
+}
+
+async function askGemini({ message, lowDataMode }) {
+  const geminiKey = process.env.GEMINI_API_KEY;
+  if (!hasUsableSecret(geminiKey)) return null;
+
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`;
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: `${buildAiSystemPrompt(lowDataMode)}\n\nUser: ${message}` }] }],
+      generationConfig: {
+        temperature: 0.3,
+        maxOutputTokens: lowDataMode ? 140 : 320,
+      },
+    }),
+  });
+
+  if (!response.ok) return null;
+  const json = await response.json();
+  return json?.candidates?.[0]?.content?.parts?.[0]?.text || null;
+}
+
+async function askGroq({ message, lowDataMode }) {
+  const groqKey = process.env.GROQ_API_KEY;
+  if (!hasUsableSecret(groqKey)) return null;
+
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${groqKey}`,
+    },
+    body: JSON.stringify({
+      model: 'llama-3.1-8b-instant',
+      temperature: 0.3,
+      max_tokens: lowDataMode ? 140 : 320,
+      messages: [
+        { role: 'system', content: buildAiSystemPrompt(lowDataMode) },
+        { role: 'user', content: message },
+      ],
+    }),
+  });
+
+  if (!response.ok) return null;
+  const json = await response.json();
+  return json?.choices?.[0]?.message?.content || null;
+}
+
+function localAiFallback({ message, lowDataMode }) {
+  const text = String(message || '').toLowerCase();
+  if (text.includes('emergency') || text.includes('urgent') || text.includes('bleeding')) {
+    return lowDataMode
+      ? 'Emergency protocol:\n• Call local emergency number now\n• Pre-book nearest emergency bed\n• Keep airway clear and share vitals'
+      : 'Emergency protocol:\n1) Call local emergency services immediately.\n2) In BookMyHospital, choose Emergency Bed pre-booking at nearest approved hospital.\n3) Keep patient airway clear, monitor breathing/pulse, and carry basic records while traveling.';
+  }
+  if (text.includes('complaint')) {
+    return lowDataMode
+      ? 'Complaint flow:\n• Select hospital\n• Add proof files\n• Submit and track admin action'
+      : 'Complaint flow:\n1) Open the selected hospital card and raise a complaint.\n2) Attach clear photo/video proof if available.\n3) Admin reviews and can deactivate/ban hospital for violations.';
+  }
+  return lowDataMode
+    ? 'I can help with booking, complaints, emergency routing, and app support. Ask in one line for fastest response.'
+    : 'I can help with emergency triage guidance, booking flow, complaint workflow, and low-network usage tips. Tell me your situation and I will give short actionable steps.';
+}
+
 app.get('/health', async (_req, res) => {
   res.json({ ok: true, service: 'bookmyhospital-backend', mongo: Boolean(process.env.MONGODB_URI) });
 });
@@ -150,6 +235,43 @@ app.post('/api/admin/auth', async (req, res) => {
   }
 
   return res.json({ ok: true, role: 'admin' });
+});
+
+app.post('/api/ai/help', async (req, res) => {
+  const { message, lowDataMode = false } = req.body || {};
+  if (!message || !String(message).trim()) {
+    return res.status(400).json({ error: 'message is required' });
+  }
+
+  const normalizedMessage = String(message).trim();
+  try {
+    const geminiReply = await askGemini({ message: normalizedMessage, lowDataMode: Boolean(lowDataMode) });
+    if (geminiReply) {
+      return res.json({ reply: geminiReply, provider: 'gemini', fallback: false });
+    }
+
+    const groqReply = await askGroq({ message: normalizedMessage, lowDataMode: Boolean(lowDataMode) });
+    if (groqReply) {
+      return res.json({ reply: groqReply, provider: 'groq', fallback: false });
+    }
+  } catch (error) {
+    console.warn('AI provider unavailable, using fallback:', error.message);
+  }
+
+  return res.json({
+    reply: localAiFallback({ message: normalizedMessage, lowDataMode: Boolean(lowDataMode) }),
+    provider: 'local-fallback',
+    fallback: true,
+  });
+});
+
+app.get('/api/patients/:patientId/notifications', async (req, res) => {
+  const patientId = String(req.params.patientId || '').trim();
+  if (!patientId) {
+    return res.status(400).json({ error: 'patientId is required' });
+  }
+  const notifications = await listPatientNotifications(patientId);
+  return res.json({ notifications });
 });
 
 app.post('/api/hospitals/auth', async (req, res) => {
@@ -342,6 +464,26 @@ app.patch('/api/admin/hospitals/:id/discipline', async (req, res) => {
 
   const hospital = await disciplineHospital(req.params.id, action);
   if (!hospital) return respondNotFound(res, 'Hospital not found');
+
+  if (action === 'deactivate' || action === 'ban') {
+    const complaints = await listComplaints();
+    const targetComplaints = complaints.filter((c) => c.hospitalId === (hospital.id || hospital.hospitalId));
+    const patientIds = [...new Set(targetComplaints.map((c) => String(c.patientId || '').trim()).filter(Boolean))];
+
+    const baseMessage = 'The corrupted entity has been neutralized — Batman';
+    const title = action === 'ban' ? 'Hospital Permanently Banned' : 'Hospital Deactivated';
+
+    for (const patientId of patientIds) {
+      const notification = await createNotification({
+        patientId,
+        hospitalId: hospital.id || hospital.hospitalId,
+        title,
+        message: baseMessage,
+        type: action,
+      });
+      io.emit('patient:notification', notification);
+    }
+  }
 
   io.emit('hospital:status-updated', hospital);
   emitOverview();

@@ -106,6 +106,7 @@ const memory = {
   ],
   bookings: [],
   complaints: [],
+  notifications: [],
 };
 
 const schemas = {};
@@ -195,10 +196,24 @@ function ensureSchemas() {
     baseOptions,
   );
 
+  const notificationSchema = new mongoose.Schema(
+    {
+      notificationId: { type: String, unique: true, default: () => `note_${crypto.randomUUID()}` },
+      patientId: { type: String, required: true, index: true },
+      hospitalId: { type: String, default: null },
+      title: { type: String, required: true },
+      message: { type: String, required: true },
+      type: { type: String, default: 'info' },
+      read: { type: Boolean, default: false },
+    },
+    baseOptions,
+  );
+
   schemas.User = mongoose.models.User || mongoose.model('User', userSchema);
   schemas.Hospital = mongoose.models.Hospital || mongoose.model('Hospital', hospitalSchema);
   schemas.Booking = mongoose.models.Booking || mongoose.model('Booking', bookingSchema);
   schemas.Complaint = mongoose.models.Complaint || mongoose.model('Complaint', complaintSchema);
+  schemas.Notification = mongoose.models.Notification || mongoose.model('Notification', notificationSchema);
 }
 
 function normalize(record, type) {
@@ -208,6 +223,7 @@ function normalize(record, type) {
   if (type === 'hospital') plain.id = plain.id || plain.hospitalId;
   if (type === 'booking') plain.id = plain.id || plain.bookingId;
   if (type === 'complaint') plain.id = plain.id || plain.complaintId;
+  if (type === 'notification') plain.id = plain.id || plain.notificationId;
   if (type === 'user') plain.id = plain.id || plain.userId;
   return plain;
 }
@@ -432,6 +448,36 @@ async function listComplaints() {
   return memory.complaints;
 }
 
+async function createNotification(payload) {
+  if (useMongo) {
+    ensureSchemas();
+    const notification = await schemas.Notification.create(payload);
+    return normalize(notification, 'notification');
+  }
+  const notification = {
+    id: `note_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+    ...payload,
+    read: Boolean(payload.read || false),
+    createdAt: new Date().toISOString(),
+  };
+  memory.notifications.unshift(notification);
+  return notification;
+}
+
+async function listPatientNotifications(patientId) {
+  if (useMongo) {
+    ensureSchemas();
+    return normalizeList(
+      await schemas.Notification.find({ patientId }).sort({ createdAt: -1 }).limit(100),
+      'notification',
+    );
+  }
+  return memory.notifications
+    .filter((n) => n.patientId === patientId)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    .slice(0, 100);
+}
+
 async function disciplineHospital(id, action) {
   if (useMongo) {
     ensureSchemas();
@@ -499,6 +545,8 @@ module.exports = {
   listBookings,
   createComplaint,
   listComplaints,
+  createNotification,
+  listPatientNotifications,
   disciplineHospital,
   overview,
   hospitalAuth,
