@@ -182,6 +182,9 @@ function ensureSchemas() {
       type: { type: String, required: true },
       priority: { type: String, default: 'normal' },
       status: { type: String, default: 'confirmed' },
+      assignedDoctor: { type: String, default: null },
+      assignedTime: { type: String, default: null },
+      queuePosition: { type: Number, default: null },
     },
     baseOptions,
   );
@@ -458,14 +461,54 @@ async function createBooking(payload) {
   return booking;
 }
 
-async function listBookings({ hospitalId } = {}) {
+async function listBookings({ hospitalId, patientId } = {}) {
   if (useMongo) {
     ensureSchemas();
     const query = hospitalId ? { hospitalId } : {};
+    if (patientId) query.patientId = patientId;
     return normalizeList(await schemas.Booking.find(query).sort({ createdAt: -1 }), 'booking');
   }
-  const bookings = hospitalId ? memory.bookings.filter((b) => b.hospitalId === hospitalId) : memory.bookings;
+  let bookings = memory.bookings;
+  if (hospitalId) bookings = bookings.filter((b) => b.hospitalId === hospitalId);
+  if (patientId) bookings = bookings.filter((b) => b.patientId === patientId);
   return bookings;
+}
+
+async function getBookingById(id) {
+  if (useMongo) {
+    ensureSchemas();
+    return normalize(await schemas.Booking.findOne({ $or: [{ bookingId: id }, { _id: id }] }), 'booking');
+  }
+  return memory.bookings.find((b) => b.id === id || b.bookingId === id) || null;
+}
+
+async function updateBooking(id, updates) {
+  if (useMongo) {
+    ensureSchemas();
+    const booking = await schemas.Booking.findOne({ $or: [{ bookingId: id }, { _id: id }] });
+    if (!booking) return null;
+    const keys = ['status', 'assignedDoctor', 'assignedTime', 'queuePosition'];
+    keys.forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(updates, key)) {
+        booking[key] = updates[key];
+      }
+    });
+    await booking.save();
+    return normalize(booking, 'booking');
+  }
+
+  const index = memory.bookings.findIndex((b) => b.id === id || b.bookingId === id);
+  if (index < 0) return null;
+  const booking = memory.bookings[index];
+  const keys = ['status', 'assignedDoctor', 'assignedTime', 'queuePosition'];
+  keys.forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(updates, key)) {
+      booking[key] = updates[key];
+    }
+  });
+  booking.updatedAt = new Date().toISOString();
+  memory.bookings[index] = booking;
+  return booking;
 }
 
 async function createComplaint(payload) {
@@ -588,6 +631,8 @@ module.exports = {
   updateHospitalAvailability,
   createBooking,
   listBookings,
+  getBookingById,
+  updateBooking,
   createComplaint,
   listComplaints,
   createNotification,

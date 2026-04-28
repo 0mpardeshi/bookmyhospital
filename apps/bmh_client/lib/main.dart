@@ -5,12 +5,16 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 import 'package:http/http.dart' as http;
+import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Hive.initFlutter();
   await BackendConfig.load();
   runApp(const BookMyHospitalApp());
 }
@@ -168,10 +172,197 @@ class PatientNotification {
   }
 }
 
+enum FacilityRole { hospital, clinic }
+
+extension FacilityRoleX on FacilityRole {
+  String get label => this == FacilityRole.hospital ? 'Hospital' : 'Clinic';
+}
+
+class AppointmentRecord {
+  AppointmentRecord({
+    required this.id,
+    required this.displayId,
+    required this.hospitalId,
+    required this.hospitalName,
+    required this.patientId,
+    required this.patientName,
+    required this.type,
+    required this.status,
+    required this.priority,
+    required this.createdAt,
+    this.assignedDoctor,
+    this.assignedTime,
+    this.queuePosition,
+    this.updatedAt,
+  });
+
+  final String id;
+  final String displayId;
+  final String hospitalId;
+  final String hospitalName;
+  final String patientId;
+  final String patientName;
+  final String type;
+  final String status;
+  final String priority;
+  final String createdAt;
+  final String? assignedDoctor;
+  final String? assignedTime;
+  final int? queuePosition;
+  final String? updatedAt;
+
+  factory AppointmentRecord.fromBookingJson(Map<String, dynamic> json) {
+    final id = json['id']?.toString() ?? 'booking_${DateTime.now().millisecondsSinceEpoch}';
+    return AppointmentRecord(
+      id: id,
+      displayId: _toDisplayId(id),
+      hospitalId: json['hospitalId']?.toString() ?? '',
+      hospitalName: json['hospitalName']?.toString() ?? 'Unknown Facility',
+      patientId: json['patientId']?.toString() ?? '',
+      patientName: json['patientName']?.toString() ?? 'Unknown Patient',
+      type: (json['type']?.toString() ?? 'Appointment').trim(),
+      status: _normalizeStatus(json['status']?.toString() ?? 'pending'),
+      priority: (json['priority']?.toString() ?? 'normal').trim(),
+      createdAt: json['createdAt']?.toString() ?? DateTime.now().toIso8601String(),
+      assignedDoctor: json['assignedDoctor']?.toString(),
+      assignedTime: json['assignedTime']?.toString(),
+      queuePosition: json['queuePosition'] is int
+          ? json['queuePosition'] as int
+          : int.tryParse('${json['queuePosition'] ?? ''}'),
+      updatedAt: json['updatedAt']?.toString(),
+    );
+  }
+
+  factory AppointmentRecord.fromJson(Map<String, dynamic> json) {
+    return AppointmentRecord(
+      id: json['id']?.toString() ?? '',
+      displayId: json['displayId']?.toString() ?? _toDisplayId(json['id']?.toString() ?? ''),
+      hospitalId: json['hospitalId']?.toString() ?? '',
+      hospitalName: json['hospitalName']?.toString() ?? 'Unknown Facility',
+      patientId: json['patientId']?.toString() ?? '',
+      patientName: json['patientName']?.toString() ?? 'Unknown Patient',
+      type: json['type']?.toString() ?? 'Appointment',
+      status: _normalizeStatus(json['status']?.toString() ?? 'pending'),
+      priority: json['priority']?.toString() ?? 'normal',
+      createdAt: json['createdAt']?.toString() ?? DateTime.now().toIso8601String(),
+      assignedDoctor: json['assignedDoctor']?.toString(),
+      assignedTime: json['assignedTime']?.toString(),
+      queuePosition: json['queuePosition'] is int
+          ? json['queuePosition'] as int
+          : int.tryParse('${json['queuePosition'] ?? ''}'),
+      updatedAt: json['updatedAt']?.toString(),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'displayId': displayId,
+    'hospitalId': hospitalId,
+    'hospitalName': hospitalName,
+    'patientId': patientId,
+    'patientName': patientName,
+    'type': type,
+    'status': status,
+    'priority': priority,
+    'createdAt': createdAt,
+    'assignedDoctor': assignedDoctor,
+    'assignedTime': assignedTime,
+    'queuePosition': queuePosition,
+    'updatedAt': updatedAt,
+  };
+
+  AppointmentRecord copyWith({
+    String? status,
+    String? assignedDoctor,
+    String? assignedTime,
+    int? queuePosition,
+    String? updatedAt,
+  }) {
+    return AppointmentRecord(
+      id: id,
+      displayId: displayId,
+      hospitalId: hospitalId,
+      hospitalName: hospitalName,
+      patientId: patientId,
+      patientName: patientName,
+      type: type,
+      status: status ?? this.status,
+      priority: priority,
+      createdAt: createdAt,
+      assignedDoctor: assignedDoctor ?? this.assignedDoctor,
+      assignedTime: assignedTime ?? this.assignedTime,
+      queuePosition: queuePosition ?? this.queuePosition,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
+
+  static String _toDisplayId(String raw) {
+    final compact = raw.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '').toUpperCase();
+    if (compact.isEmpty) return 'APT_UNKNOWN';
+    final suffix = compact.length <= 8 ? compact : compact.substring(compact.length - 8);
+    return 'APT_$suffix';
+  }
+
+  static String _normalizeStatus(String status) {
+    final normalized = status.trim().toLowerCase();
+    if (normalized.isEmpty || normalized == 'confirmed') return 'pending';
+    if (normalized == 'cancelled') return 'canceled';
+    return normalized;
+  }
+}
+
+class AppointmentFlow {
+  static bool canTransition(String from, String to) {
+    const transitions = <String, Set<String>>{
+      'pending': {'accepted', 'declined', 'canceled', 'reschedule_requested'},
+      'accepted': {'assigned', 'declined', 'canceled'},
+      'assigned': {'queued', 'reschedule_requested', 'canceled'},
+      'queued': {'completed', 'canceled'},
+      'reschedule_requested': {'assigned', 'declined', 'canceled'},
+    };
+    final allowed = transitions[from];
+    if (allowed == null) return false;
+    return allowed.contains(to);
+  }
+}
+
+class HqrGenerationResult {
+  const HqrGenerationResult({
+    required this.token,
+    required this.verifyUrl,
+    required this.expiresAt,
+    required this.expiresInSeconds,
+  });
+
+  final String token;
+  final String verifyUrl;
+  final String expiresAt;
+  final int expiresInSeconds;
+}
+
+class HqrVerifyResult {
+  const HqrVerifyResult({
+    required this.verified,
+    required this.reason,
+    this.bookingId,
+  });
+
+  final bool verified;
+  final String reason;
+  final String? bookingId;
+}
+
 class ApiService {
+  static const _offlineBoxName = 'bmh_phase3_offline';
   static const _hospitalsCacheKey = 'bookmyhospital_cached_hospitals';
   static String _notificationsCacheKey(String patientId) =>
       'bookmyhospital_cached_notifications_$patientId';
+  static String _patientAppointmentsCacheKey(String patientId) =>
+      'bookmyhospital_cached_patient_appointments_$patientId';
+  static String _facilityAppointmentsCacheKey(String facilityId, FacilityRole role) =>
+      'bookmyhospital_cached_${role.name}_appointments_$facilityId';
+  static String _facilityAppointmentActionsKey(String facilityId, FacilityRole role) =>
+      'bookmyhospital_cached_${role.name}_appointment_actions_$facilityId';
 
   Future<void> _cacheJson(String key, dynamic value) async {
     final prefs = await SharedPreferences.getInstance();
@@ -181,6 +372,29 @@ class ApiService {
   Future<Map<String, dynamic>?> _readCachedMap(String key) async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(key);
+    if (raw == null || raw.trim().isEmpty) return null;
+    try {
+      return jsonDecode(raw) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<Box<String>> _offlineBox() async {
+    if (Hive.isBoxOpen(_offlineBoxName)) {
+      return Hive.box<String>(_offlineBoxName);
+    }
+    return Hive.openBox<String>(_offlineBoxName);
+  }
+
+  Future<void> _cacheHiveJson(String key, dynamic value) async {
+    final box = await _offlineBox();
+    await box.put(key, jsonEncode(value));
+  }
+
+  Future<Map<String, dynamic>?> _readHiveMap(String key) async {
+    final box = await _offlineBox();
+    final raw = box.get(key);
     if (raw == null || raw.trim().isEmpty) return null;
     try {
       return jsonDecode(raw) as Map<String, dynamic>;
@@ -346,6 +560,197 @@ class ApiService {
           )
           .toList();
     }
+  }
+
+  Future<List<AppointmentRecord>> getPatientAppointments(String patientId) async {
+    try {
+      final uri = Uri.parse(
+        '${BackendConfig.baseUrl}/api/patients/$patientId/bookings',
+      );
+      final response = await http.get(uri).timeout(const Duration(seconds: 10));
+      if (response.statusCode != 200) {
+        return _readPatientAppointmentsCache(patientId);
+      }
+      final map = jsonDecode(response.body) as Map<String, dynamic>;
+      final appointments = (map['bookings'] as List<dynamic>? ?? [])
+          .map((item) => AppointmentRecord.fromBookingJson(item as Map<String, dynamic>))
+          .toList()
+        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      await _cacheHiveJson(
+        _patientAppointmentsCacheKey(patientId),
+        {'appointments': appointments.map((item) => item.toJson()).toList()},
+      );
+      return appointments;
+    } catch (_) {
+      return _readPatientAppointmentsCache(patientId);
+    }
+  }
+
+  Future<List<AppointmentRecord>> getFacilityAppointments({
+    required String facilityId,
+    required FacilityRole role,
+  }) async {
+    try {
+      final uri = Uri.parse('${BackendConfig.baseUrl}/api/hospitals/$facilityId/bookings');
+      final response = await http.get(uri).timeout(const Duration(seconds: 10));
+      if (response.statusCode != 200) {
+        return _readFacilityAppointmentsCache(facilityId, role);
+      }
+      final map = jsonDecode(response.body) as Map<String, dynamic>;
+      final appointments = (map['bookings'] as List<dynamic>? ?? [])
+          .map((item) => AppointmentRecord.fromBookingJson(item as Map<String, dynamic>))
+          .toList()
+        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      await _cacheHiveJson(
+        _facilityAppointmentsCacheKey(facilityId, role),
+        {'appointments': appointments.map((item) => item.toJson()).toList()},
+      );
+      return appointments;
+    } catch (_) {
+      return _readFacilityAppointmentsCache(facilityId, role);
+    }
+  }
+
+  Future<AppointmentRecord?> updateAppointment({
+    required String appointmentId,
+    String? status,
+    String? assignedDoctor,
+    String? assignedTime,
+    int? queuePosition,
+  }) async {
+    try {
+      final payload = <String, dynamic>{};
+      if (status != null) payload['status'] = status;
+      if (assignedDoctor != null) payload['assignedDoctor'] = assignedDoctor;
+      if (assignedTime != null) payload['assignedTime'] = assignedTime;
+      if (queuePosition != null) payload['queuePosition'] = queuePosition;
+      if (payload.isEmpty) return null;
+      final uri = Uri.parse('${BackendConfig.baseUrl}/api/bookings/$appointmentId');
+      final response = await http
+          .patch(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(payload),
+          )
+          .timeout(const Duration(seconds: 10));
+      if (response.statusCode != 200) return null;
+      final map = jsonDecode(response.body) as Map<String, dynamic>;
+      final booking = map['booking'] as Map<String, dynamic>?;
+      if (booking == null) return null;
+      return AppointmentRecord.fromBookingJson(booking);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<HqrGenerationResult?> generateHqr({
+    required String bookingId,
+    required String facilityId,
+  }) async {
+    try {
+      final uri = Uri.parse('${BackendConfig.baseUrl}/api/hqr/generate');
+      final response = await http
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'bookingId': bookingId, 'hospitalId': facilityId}),
+          )
+          .timeout(const Duration(seconds: 10));
+      if (response.statusCode != 200) return null;
+      final map = jsonDecode(response.body) as Map<String, dynamic>;
+      return HqrGenerationResult(
+        token: map['token']?.toString() ?? '',
+        verifyUrl: map['verifyUrl']?.toString() ?? '',
+        expiresAt: map['expiresAt']?.toString() ?? '',
+        expiresInSeconds: (map['expiresInSeconds'] as num?)?.toInt() ?? 900,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<HqrVerifyResult> verifyHqr({
+    required String token,
+    required String patientId,
+  }) async {
+    try {
+      final uri = Uri.parse('${BackendConfig.baseUrl}/api/hqr/verify');
+      final response = await http
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'token': token, 'patientId': patientId}),
+          )
+          .timeout(const Duration(seconds: 10));
+      final map = jsonDecode(response.body) as Map<String, dynamic>;
+      return HqrVerifyResult(
+        verified: map['verified'] == true,
+        reason: map['message']?.toString() ??
+            map['reason']?.toString() ??
+            map['error']?.toString() ??
+            (response.statusCode == 200 ? 'Verified' : 'Verification failed'),
+        bookingId: map['bookingId']?.toString(),
+      );
+    } catch (_) {
+      return const HqrVerifyResult(
+        verified: false,
+        reason: 'Verification service unavailable',
+      );
+    }
+  }
+
+  Future<Map<String, AppointmentRecord>> readFacilityAppointmentActions({
+    required String facilityId,
+    required FacilityRole role,
+  }) async {
+    final cached = await _readHiveMap(
+      _facilityAppointmentActionsKey(facilityId, role),
+    );
+    final actions = (cached?['actions'] as Map<String, dynamic>? ?? {});
+    final result = <String, AppointmentRecord>{};
+    for (final entry in actions.entries) {
+      if (entry.value is Map<String, dynamic>) {
+        result[entry.key] = AppointmentRecord.fromJson(entry.value as Map<String, dynamic>);
+      }
+    }
+    return result;
+  }
+
+  Future<void> saveFacilityAppointmentAction({
+    required String facilityId,
+    required FacilityRole role,
+    required AppointmentRecord appointment,
+  }) async {
+    final current = await readFacilityAppointmentActions(
+      facilityId: facilityId,
+      role: role,
+    );
+    current[appointment.id] = appointment;
+    await _cacheHiveJson(
+      _facilityAppointmentActionsKey(facilityId, role),
+      {'actions': current.map((key, value) => MapEntry(key, value.toJson()))},
+    );
+  }
+
+  Future<List<AppointmentRecord>> _readPatientAppointmentsCache(String patientId) async {
+    final cached = await _readHiveMap(_patientAppointmentsCacheKey(patientId));
+    return (cached?['appointments'] as List<dynamic>? ?? [])
+        .map((item) => AppointmentRecord.fromJson(item as Map<String, dynamic>))
+        .toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+  }
+
+  Future<List<AppointmentRecord>> _readFacilityAppointmentsCache(
+    String facilityId,
+    FacilityRole role,
+  ) async {
+    final cached = await _readHiveMap(
+      _facilityAppointmentsCacheKey(facilityId, role),
+    );
+    return (cached?['appointments'] as List<dynamic>? ?? [])
+        .map((item) => AppointmentRecord.fromJson(item as Map<String, dynamic>))
+        .toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
   }
 
   Future<String> askAiHelp(String message, {required bool lowDataMode}) async {
@@ -699,11 +1104,16 @@ class PatientHomeScreen extends StatefulWidget {
 class _PatientHomeScreenState extends State<PatientHomeScreen> {
   final ApiService _api = ApiService();
   List<HospitalInfo> _hospitals = [];
+  List<AppointmentRecord> _appointments = [];
   List<PatientNotification> _notifications = [];
   bool _loading = true;
+  bool _loadingAppointments = true;
+  int _selectedTabIndex = 0;
+  String? _highlightedAppointmentId;
   String _patientUniqueId = '';
   Timer? _pollTimer;
   Timer? _notificationPollTimer;
+  Timer? _appointmentPollTimer;
   io.Socket? _socket;
   DateTime? _lastSync;
 
@@ -721,6 +1131,10 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
       const Duration(seconds: 30),
       (_) => _loadNotifications(),
     );
+    _appointmentPollTimer = Timer.periodic(
+      const Duration(seconds: 20),
+      (_) => _loadAppointments(),
+    );
   }
 
   Future<void> _initPatientId() async {
@@ -728,6 +1142,7 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
     if (!mounted) return;
     setState(() => _patientUniqueId = id);
     await _loadNotifications();
+    await _loadAppointments();
   }
 
   void _connectLive() {
@@ -743,6 +1158,8 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
       socket.on('overview:update', (_) => _loadHospitals());
       socket.on('hospital:availability-updated', (_) => _loadHospitals());
       socket.on('booking:created', (_) => _loadHospitals());
+      socket.on('booking:created', (_) => _loadAppointments());
+      socket.on('booking:updated', (_) => _loadAppointments());
       socket.on('patient:notification', (payload) {
         if (payload is! Map<String, dynamic>) return;
         final targetId = payload['patientId']?.toString() ?? '';
@@ -789,6 +1206,16 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
     });
   }
 
+  Future<void> _loadAppointments() async {
+    if (_patientUniqueId.trim().isEmpty) return;
+    final appointments = await _api.getPatientAppointments(_patientUniqueId);
+    if (!mounted) return;
+    setState(() {
+      _appointments = appointments;
+      _loadingAppointments = false;
+    });
+  }
+
   void _openAiAssistant() {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
@@ -815,14 +1242,83 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
         ),
       ),
     );
+    if (ok) {
+      _loadAppointments();
+      _loadHospitals();
+    }
   }
 
   @override
   void dispose() {
     _pollTimer?.cancel();
     _notificationPollTimer?.cancel();
+    _appointmentPollTimer?.cancel();
     _socket?.dispose();
     super.dispose();
+  }
+
+  Future<void> _openQrEntryPoint() async {
+    final match = await Navigator.of(context).push<AppointmentRecord>(
+      MaterialPageRoute(
+        builder: (_) => AppointmentQrScannerScreen(
+          appointments: _appointments,
+          api: _api,
+          patientId: _patientUniqueId,
+        ),
+      ),
+    );
+    if (!mounted || match == null) return;
+    setState(() {
+      _selectedTabIndex = 1;
+      _highlightedAppointmentId = match.id;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Scanned ${match.displayId} for ${match.hospitalName}.'),
+      ),
+    );
+  }
+
+  Future<void> _updatePatientAppointmentStatus(
+    AppointmentRecord appointment,
+    String targetStatus,
+  ) async {
+    final allowedStatuses = {'pending', 'accepted', 'assigned', 'queued'};
+    if (!allowedStatuses.contains(appointment.status)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Action not allowed for current status.')),
+      );
+      return;
+    }
+
+    final remote = await _api.updateAppointment(
+      appointmentId: appointment.id,
+      status: targetStatus,
+    );
+    final next =
+        remote ??
+        appointment.copyWith(
+          status: targetStatus,
+          updatedAt: DateTime.now().toIso8601String(),
+        );
+    if (!mounted) return;
+    setState(() {
+      _appointments = _appointments.map((item) {
+        if (item.id != appointment.id) return item;
+        return next;
+      }).toList()
+        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          remote == null
+              ? '${appointment.displayId} updated locally. Sync pending.'
+              : '${appointment.displayId} marked $targetStatus',
+        ),
+      ),
+    );
   }
 
   Future<void> _complain(HospitalInfo hospital) async {
@@ -999,7 +1495,13 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Patient Dashboard'),
+        title: Text(
+          _selectedTabIndex == 0
+              ? 'Patient Home'
+              : _selectedTabIndex == 1
+              ? 'My Appointments'
+              : 'Patient Profile',
+        ),
         actions: [
           IconButton(
             tooltip: 'AI Help',
@@ -1012,134 +1514,233 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
           ),
         ],
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : ListView(
-              padding: const EdgeInsets.all(12),
-              children: [
-                Card(
-                  child: ListTile(
-                    title: Text('Welcome, ${widget.patientName}'),
-                    subtitle: Text(
-                      '${widget.patientEmail}\nUnique Patient ID: ${_patientUniqueId.isEmpty ? 'creating...' : _patientUniqueId}',
-                    ),
-                  ),
-                ),
-                Card(
-                  color: const Color(0xFFE0F2FE),
-                  child: ListTile(
-                    title: const Text('Live hospital sync'),
-                    subtitle: Text(
-                      'Updated ${_lastSync == null ? 'just now' : _lastSync!.toLocal().toString()} • ${_hospitals.length} hospitals visible',
-                    ),
-                    trailing: FilledButton.tonal(
-                      onPressed: _loadHospitals,
-                      child: const Text('Refresh'),
-                    ),
-                  ),
-                ),
-                if (_notifications.isNotEmpty)
-                  Card(
-                    color: const Color(0xFFFFF7ED),
-                    child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Important Notifications',
-                            style: Theme.of(context).textTheme.titleMedium,
-                          ),
-                          const SizedBox(height: 8),
-                          ..._notifications
-                              .take(3)
-                              .map(
-                                (n) => ListTile(
-                                  dense: true,
-                                  contentPadding: EdgeInsets.zero,
-                                  leading: const Icon(
-                                    Icons.notifications_active_outlined,
-                                  ),
-                                  title: Text(n.title),
-                                  subtitle: Text(n.message),
-                                ),
-                              ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ..._hospitals.map(
-                  (h) => Card(
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(18),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.all(14),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            h.name,
-                            style: Theme.of(context).textTheme.titleMedium
-                                ?.copyWith(fontWeight: FontWeight.bold),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            '${h.location} • Rating ${h.avgReview.toStringAsFixed(1)} (${h.ratingsCount})',
-                          ),
-                          const SizedBox(height: 6),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: [
-                              _chip('Beds ${h.bedsAvailable}'),
-                              _chip('ICU ${h.icuAvailable}'),
-                              _chip('OT ${h.otAvailable}'),
-                              _chip('Doctors ${h.doctorsAvailable}'),
-                              _chip('Surgeons ${h.surgeonsAvailable}'),
-                              _chip('Wait ${h.queueWaitMinutes} min'),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          Text('Specialities: ${h.specialities.join(', ')}'),
-                          const SizedBox(height: 10),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: [
-                              FilledButton.tonal(
-                                onPressed: () => _book(h, 'Bed'),
-                                child: const Text('Pre-book Bed'),
-                              ),
-                              FilledButton.tonal(
-                                onPressed: () => _book(h, 'Emergency Bed'),
-                                child: const Text('Emergency Bed'),
-                              ),
-                              FilledButton.tonal(
-                                onPressed: () => _book(h, 'Appointment'),
-                                child: const Text('Book Appointment'),
-                              ),
-                              OutlinedButton(
-                                onPressed: () => _complain(h),
-                                child: const Text('Raise Complaint'),
-                              ),
-                              OutlinedButton(
-                                onPressed: () => _rateHospital(h),
-                                child: const Text('Rate Hospital'),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
+      body: IndexedStack(
+        index: _selectedTabIndex,
+        children: [
+          _buildHomeTab(),
+          _buildAppointmentsTab(),
+          _buildProfileTab(),
+        ],
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _selectedTabIndex,
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.home_outlined),
+            selectedIcon: Icon(Icons.home),
+            label: 'Home',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.event_note_outlined),
+            selectedIcon: Icon(Icons.event_note),
+            label: 'Appointments',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.person_outline),
+            selectedIcon: Icon(Icons.person),
+            label: 'Profile',
+          ),
+        ],
+        onDestinationSelected: (index) {
+          setState(() => _selectedTabIndex = index);
+        },
+      ),
     );
   }
 
-  Widget _chip(String label) {
+  Widget _buildHomeTab() {
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    return ListView(
+      padding: const EdgeInsets.all(12),
+      children: [
+        Card(
+          child: ListTile(
+            title: Text('Welcome, ${widget.patientName}'),
+            subtitle: Text(
+              '${widget.patientEmail}\nPatient ID: ${_patientUniqueId.isEmpty ? 'creating...' : _patientUniqueId}',
+            ),
+          ),
+        ),
+        Card(
+          color: const Color(0xFFE0F2FE),
+          child: ListTile(
+            title: const Text('Live facility sync'),
+            subtitle: Text(
+              'Updated ${_lastSync == null ? 'just now' : _lastSync!.toLocal().toString()} • ${_hospitals.length} facilities visible',
+            ),
+            trailing: FilledButton.tonal(
+              onPressed: _loadHospitals,
+              child: const Text('Refresh'),
+            ),
+          ),
+        ),
+        ..._hospitals.map(
+          (h) => Card(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    h.name,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${h.location} • Rating ${h.avgReview.toStringAsFixed(1)} (${h.ratingsCount})',
+                  ),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      _metricChip('Beds ${h.bedsAvailable}'),
+                      _metricChip('ICU ${h.icuAvailable}'),
+                      _metricChip('OT ${h.otAvailable}'),
+                      _metricChip('Doctors ${h.doctorsAvailable}'),
+                      _metricChip('Wait ${h.queueWaitMinutes}m'),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text('Specialities: ${h.specialities.join(', ')}'),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      FilledButton.tonal(
+                        onPressed: () => _book(h, 'Appointment'),
+                        child: const Text('Book Appointment'),
+                      ),
+                      FilledButton.tonal(
+                        onPressed: () => _book(h, 'Emergency'),
+                        child: const Text('Emergency'),
+                      ),
+                      OutlinedButton(
+                        onPressed: _openQrEntryPoint,
+                        child: const Text('QR Scanner'),
+                      ),
+                      OutlinedButton(
+                        onPressed: () => _complain(h),
+                        child: const Text('Raise Complaint'),
+                      ),
+                      OutlinedButton(
+                        onPressed: () => _rateHospital(h),
+                        child: const Text('Rate Facility'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAppointmentsTab() {
+    if (_loadingAppointments) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_appointments.isEmpty) {
+      return ListView(
+        padding: const EdgeInsets.all(16),
+        children: const [
+          Card(
+            child: ListTile(
+              title: Text('No appointments yet'),
+              subtitle: Text(
+                'Book from Home tab. Offline cache will keep your last synced appointments.',
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+    return ListView(
+      padding: const EdgeInsets.all(12),
+      children: [
+        if (_notifications.isNotEmpty)
+          ..._notifications.take(3).map((item) => NotificationTile(notification: item)),
+        ..._appointments.map((appointment) {
+          final canEdit = {'pending', 'accepted', 'assigned', 'queued'}.contains(
+            appointment.status,
+          );
+          return AppointmentCard(
+            appointment: appointment,
+            highlighted: _highlightedAppointmentId == appointment.id,
+            showHospitalName: true,
+            actions: canEdit
+                ? [
+                    AppointmentCardAction(
+                      label: 'Cancel',
+                      semanticLabel: 'Cancel appointment ${appointment.displayId}',
+                      onPressed: () =>
+                          _updatePatientAppointmentStatus(appointment, 'canceled'),
+                    ),
+                    AppointmentCardAction(
+                      label: 'Reschedule',
+                      semanticLabel:
+                          'Request reschedule for appointment ${appointment.displayId}',
+                      onPressed: () => _updatePatientAppointmentStatus(
+                        appointment,
+                        'reschedule_requested',
+                      ),
+                    ),
+                  ]
+                : const [],
+          );
+        }),
+      ],
+    );
+  }
+
+  Widget _buildProfileTab() {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.person),
+            title: Text(widget.patientName),
+            subtitle: Text(widget.patientEmail),
+          ),
+        ),
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.badge_outlined),
+            title: const Text('Patient Unique ID'),
+            subtitle: Text(_patientUniqueId.isEmpty ? 'creating...' : _patientUniqueId),
+          ),
+        ),
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.sync),
+            title: const Text('Sync health'),
+            subtitle: Text(
+              _lastSync == null
+                  ? 'Waiting for first sync'
+                  : 'Last sync: ${_lastSync!.toLocal()}',
+            ),
+          ),
+        ),
+        FilledButton.tonal(
+          onPressed: _openQrEntryPoint,
+          child: const Text('Open QR Scanner Entry Point'),
+        ),
+      ],
+    );
+  }
+
+  Widget _metricChip(String label) {
     return Chip(
       label: Text(label),
       backgroundColor: const Color(0xFFCCFBF1),
@@ -1425,6 +2026,7 @@ class HospitalLoginScreen extends StatefulWidget {
 
 class _HospitalLoginScreenState extends State<HospitalLoginScreen> {
   final _email = TextEditingController();
+  FacilityRole _selectedRole = FacilityRole.hospital;
   bool _loading = false;
 
   @override
@@ -1452,7 +2054,10 @@ class _HospitalLoginScreenState extends State<HospitalLoginScreen> {
 
     Navigator.of(context).pushReplacement(
       MaterialPageRoute<void>(
-        builder: (_) => HospitalDashboardScreen(hospital: hospital),
+        builder: (_) => HospitalDashboardScreen(
+          hospital: hospital,
+          role: _selectedRole,
+        ),
       ),
     );
   }
@@ -1473,9 +2078,32 @@ class _HospitalLoginScreenState extends State<HospitalLoginScreen> {
               ),
             ),
             const SizedBox(height: 12),
+            SegmentedButton<FacilityRole>(
+              segments: const [
+                ButtonSegment<FacilityRole>(
+                  value: FacilityRole.hospital,
+                  label: Text('Hospital'),
+                  icon: Icon(Icons.local_hospital_outlined),
+                ),
+                ButtonSegment<FacilityRole>(
+                  value: FacilityRole.clinic,
+                  label: Text('Clinic'),
+                  icon: Icon(Icons.medical_information_outlined),
+                ),
+              ],
+              selected: {_selectedRole},
+              onSelectionChanged: (selection) {
+                setState(() => _selectedRole = selection.first);
+              },
+            ),
+            const SizedBox(height: 12),
             FilledButton(
               onPressed: _loading ? null : _login,
-              child: Text(_loading ? 'Signing in...' : 'Open Dashboard'),
+              child: Text(
+                _loading
+                    ? 'Signing in...'
+                    : 'Open ${_selectedRole.label} Dashboard',
+              ),
             ),
           ],
         ),
@@ -1519,9 +2147,14 @@ class HospitalWaitingScreen extends StatelessWidget {
 }
 
 class HospitalDashboardScreen extends StatefulWidget {
-  const HospitalDashboardScreen({super.key, required this.hospital});
+  const HospitalDashboardScreen({
+    super.key,
+    required this.hospital,
+    this.role = FacilityRole.hospital,
+  });
 
   final HospitalInfo hospital;
+  final FacilityRole role;
 
   @override
   State<HospitalDashboardScreen> createState() =>
@@ -1536,12 +2169,14 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
   late final TextEditingController _doctors;
   late final TextEditingController _surgeons;
   late final TextEditingController _wait;
-  List<dynamic> _bookings = [];
+  List<AppointmentRecord> _appointments = [];
+  int _selectedTabIndex = 0;
+  String _statusFilter = 'all';
   io.Socket? _socket;
   Timer? _pollTimer;
   Timer? _statusTimer;
   Timer? _banExitTimer;
-  bool _loadingBookings = false;
+  bool _loadingAppointments = false;
   bool _saving = false;
   String _accountStatus = 'approved';
 
@@ -1570,12 +2205,12 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
     _wait = TextEditingController(
       text: widget.hospital.queueWaitMinutes.toString(),
     );
-    _loadBookings();
+    _loadAppointments();
     _loadHospitalStatus();
     _connectLive();
     _pollTimer = Timer.periodic(
       const Duration(seconds: 10),
-      (_) => _loadBookings(),
+      (_) => _loadAppointments(),
     );
     _statusTimer = Timer.periodic(
       const Duration(seconds: 20),
@@ -1632,9 +2267,10 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
             .disableAutoConnect()
             .build(),
       );
-      socket.on('booking:created', (_) => _loadBookings());
-      socket.on('hospital:availability-updated', (_) => _loadBookings());
-      socket.on('hospital:snapshot', (_) => _loadBookings());
+      socket.on('booking:created', (_) => _loadAppointments());
+      socket.on('booking:updated', (_) => _loadAppointments());
+      socket.on('hospital:availability-updated', (_) => _loadAppointments());
+      socket.on('hospital:snapshot', (_) => _loadAppointments());
       socket.on('hospital:status-updated', (payload) {
         if (payload is! Map<String, dynamic>) return;
         final payloadId =
@@ -1649,24 +2285,25 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
     } catch (_) {}
   }
 
-  Future<void> _loadBookings() async {
-    if (_loadingBookings) return;
-    _loadingBookings = true;
+  Future<void> _loadAppointments() async {
+    if (_loadingAppointments) return;
+    _loadingAppointments = true;
     try {
-      final response = await http.get(
-        Uri.parse(
-          '${BackendConfig.baseUrl}/api/hospitals/${_hospitalId.text.trim()}/bookings',
-        ),
+      final facilityId = _hospitalId.text.trim();
+      final remote = await _api.getFacilityAppointments(
+        facilityId: facilityId,
+        role: widget.role,
       );
-      if (response.statusCode == 200) {
-        final body = jsonDecode(response.body) as Map<String, dynamic>;
-        if (!mounted) return;
-        setState(() {
-          _bookings = (body['bookings'] as List<dynamic>? ?? []);
-        });
-      }
+      final localActions = await _api.readFacilityAppointmentActions(
+        facilityId: facilityId,
+        role: widget.role,
+      );
+      final merged = remote.map((item) => localActions[item.id] ?? item).toList()
+        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      if (!mounted) return;
+      setState(() => _appointments = merged);
     } catch (_) {}
-    _loadingBookings = false;
+    _loadingAppointments = false;
   }
 
   @override
@@ -1724,20 +2361,239 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
     }
   }
 
+  final ApiService _api = ApiService();
+
+  Future<void> _transitionAppointment(
+    AppointmentRecord appointment,
+    String nextStatus, {
+    String? assignedDoctor,
+    String? assignedTime,
+    int? queuePosition,
+  }) async {
+    if (!AppointmentFlow.canTransition(appointment.status, nextStatus)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Cannot move ${appointment.displayId} from ${appointment.status} to $nextStatus.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    final remote = await _api.updateAppointment(
+      appointmentId: appointment.id,
+      status: nextStatus,
+      assignedDoctor: assignedDoctor,
+      assignedTime: assignedTime,
+      queuePosition: queuePosition,
+    );
+    final updated =
+        remote ??
+        appointment.copyWith(
+          status: nextStatus,
+          assignedDoctor: assignedDoctor,
+          assignedTime: assignedTime,
+          queuePosition: queuePosition,
+          updatedAt: DateTime.now().toIso8601String(),
+        );
+    final facilityId = _hospitalId.text.trim();
+    if (remote == null) {
+      await _api.saveFacilityAppointmentAction(
+        facilityId: facilityId,
+        role: widget.role,
+        appointment: updated,
+      );
+    }
+    if (!mounted) return;
+    setState(() {
+      _appointments = _appointments.map((item) {
+        if (item.id != updated.id) return item;
+        return updated;
+      }).toList()
+        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          remote == null
+              ? '${appointment.displayId} updated locally. Sync pending.'
+              : '${appointment.displayId} moved to $nextStatus.',
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openAssignDialog(AppointmentRecord appointment) async {
+    final selected = await showDialog<SlotSelection>(
+      context: context,
+      builder: (ctx) => TimeSlotPickerDialog(
+        title: 'Assign doctor & time',
+        initialDoctor: appointment.assignedDoctor,
+        initialTime: appointment.assignedTime,
+      ),
+    );
+    if (selected == null) return;
+    await _transitionAppointment(
+      appointment,
+      'assigned',
+      assignedDoctor: selected.doctor,
+      assignedTime: selected.time,
+    );
+  }
+
+  Future<void> _openQueueDialog(AppointmentRecord appointment) async {
+    final controller = TextEditingController(
+      text: '${appointment.queuePosition ?? 1}',
+    );
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Set queue position'),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(
+            labelText: 'Queue position',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final queue = int.tryParse(controller.text.trim()) ?? 1;
+    await _transitionAppointment(
+      appointment,
+      'queued',
+      queuePosition: queue < 1 ? 1 : queue,
+    );
+  }
+
+  Future<void> _openHqrForAppointment(AppointmentRecord appointment) async {
+    final facilityId = _hospitalId.text.trim();
+    final hqr = await _api.generateHqr(
+      bookingId: appointment.id,
+      facilityId: facilityId,
+    );
+    if (!mounted) return;
+    if (hqr == null || hqr.verifyUrl.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to generate HQR for ${appointment.displayId}.'),
+        ),
+      );
+      return;
+    }
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('HQR Check-in'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              QrImageView(
+                data: hqr.verifyUrl,
+                size: 220,
+                eyeStyle: const QrEyeStyle(
+                  eyeShape: QrEyeShape.square,
+                  color: Color(0xFF0F172A),
+                ),
+                dataModuleStyle: const QrDataModuleStyle(
+                  dataModuleShape: QrDataModuleShape.square,
+                  color: Color(0xFF0F172A),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Expires in ${hqr.expiresInSeconds ~/ 60} minutes',
+                style: Theme.of(context).textTheme.labelLarge,
+              ),
+              const SizedBox(height: 8),
+              SelectableText(
+                hqr.verifyUrl,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<AppointmentRecord> _filteredAppointments() {
+    if (_statusFilter == 'all') return _appointments;
+    return _appointments.where((item) => item.status == _statusFilter).toList();
+  }
+
   @override
   Widget build(BuildContext context) {
+    final isClinic = widget.role == FacilityRole.clinic;
     final approvalColor = _accountStatus == 'approved'
         ? const Color(0xFF16A34A)
         : const Color(0xFFF59E0B);
+    final appBarTitle = isClinic ? 'Clinic Dashboard' : 'Hospital Dashboard';
+    final destinations = isClinic
+        ? const [
+            NavigationDestination(
+              icon: Icon(Icons.dashboard_outlined),
+              selectedIcon: Icon(Icons.dashboard),
+              label: 'Dashboard',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.event_note_outlined),
+              selectedIcon: Icon(Icons.event_note),
+              label: 'Appointments',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.person_outline),
+              selectedIcon: Icon(Icons.person),
+              label: 'Profile',
+            ),
+          ]
+        : const [
+            NavigationDestination(
+              icon: Icon(Icons.dashboard_outlined),
+              selectedIcon: Icon(Icons.dashboard),
+              label: 'Dashboard',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.event_note_outlined),
+              selectedIcon: Icon(Icons.event_note),
+              label: 'Appointments',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.settings_outlined),
+              selectedIcon: Icon(Icons.settings),
+              label: 'Settings',
+            ),
+          ];
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Hospital Dashboard (Approved)'),
+        title: Text(appBarTitle),
         actions: [
           IconButton(
             tooltip: 'Refresh now',
             onPressed: () {
               _loadHospitalStatus();
-              _loadBookings();
+              _loadAppointments();
             },
             icon: const Icon(Icons.refresh),
           ),
@@ -1779,117 +2635,255 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
                 ),
               ],
             )
-          : ListView(
-              padding: const EdgeInsets.all(16),
+          : IndexedStack(
+              index: _selectedTabIndex,
               children: [
-                Card(
-                  color: const Color(0xFFE0F2FE),
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          widget.hospital.name,
-                          style: Theme.of(context).textTheme.titleLarge
-                              ?.copyWith(fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          '${widget.hospital.location} • ${widget.hospital.email}',
-                        ),
-                        const SizedBox(height: 10),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: [
-                            Chip(
-                              label: Text(_accountStatus.toUpperCase()),
-                              backgroundColor: approvalColor.withValues(
-                                alpha: 0.14,
-                              ),
-                              side: BorderSide(
-                                color: approvalColor.withValues(alpha: 0.35),
-                              ),
-                            ),
-                            Chip(
-                              label: Text('Bookings ${_bookings.length}'),
-                              backgroundColor: const Color(0xFFCCFBF1),
-                              side: BorderSide.none,
-                            ),
-                            Chip(
-                              label: Text('Queue ${_wait.text} min'),
-                              backgroundColor: const Color(0xFFFFEDD5),
-                              side: BorderSide.none,
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 12,
-                  runSpacing: 12,
-                  children: [
-                    _hospitalStatCard('Beds', _beds.text),
-                    _hospitalStatCard('ICU', _icu.text),
-                    _hospitalStatCard('OT', _ot.text),
-                    _hospitalStatCard('Doctors', _doctors.text),
-                    _hospitalStatCard('Surgeons', _surgeons.text),
-                    _hospitalStatCard('Bookings', _bookings.length.toString()),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                _nField(_hospitalId, 'Hospital ID (demo: hosp_1)'),
-                _nField(_beds, 'Beds Available'),
-                _nField(_icu, 'ICU Available'),
-                _nField(_ot, 'OT Available'),
-                _nField(_doctors, 'Doctors Available'),
-                _nField(_surgeons, 'Surgeons Available'),
-                _nField(_wait, 'Estimated Wait (minutes)'),
-                const SizedBox(height: 10),
-                FilledButton(
-                  onPressed: (_saving || _accountStatus != 'approved')
-                      ? null
-                      : _save,
-                  child: Text(
-                    _saving ? 'Saving...' : 'Update Live Availability',
-                  ),
-                ),
-                const SizedBox(height: 18),
-                Text(
-                  'Live bookings for ${_hospitalId.text.trim()}',
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-                const SizedBox(height: 8),
-                if (_bookings.isEmpty)
-                  const Card(
-                    child: ListTile(
-                      title: Text('No bookings yet'),
-                      subtitle: Text(
-                        'When patient books Bed / Emergency Bed / Appointment, it will appear here.',
-                      ),
-                    ),
-                  )
-                else
-                  ..._bookings.map(
-                    (b) => Card(
-                      child: ListTile(
-                        leading: const Icon(Icons.event_available),
-                        title: Text(
-                          '${b['type'] ?? 'Booking'} • ${b['patientName'] ?? ''}',
-                        ),
-                        subtitle: Text(
-                          'Priority: ${b['priority'] ?? 'normal'} • ${b['status'] ?? ''}',
-                        ),
-                        trailing: Text(b['createdAt']?.toString() ?? ''),
-                      ),
-                    ),
-                  ),
+                _buildFacilityDashboardHome(approvalColor, isClinic),
+                _buildFacilityAppointmentsTab(),
+                _buildFacilitySettingsOrProfile(isClinic),
               ],
             ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _selectedTabIndex,
+        destinations: destinations,
+        onDestinationSelected: (value) {
+          setState(() => _selectedTabIndex = value);
+        },
+      ),
+    );
+  }
+
+  Widget _buildFacilityDashboardHome(Color approvalColor, bool isClinic) {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Card(
+          color: const Color(0xFFE0F2FE),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  widget.hospital.name,
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text('${widget.hospital.location} • ${widget.hospital.email}'),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    Chip(
+                      label: Text(_accountStatus.toUpperCase()),
+                      backgroundColor: approvalColor.withValues(alpha: 0.14),
+                      side: BorderSide(color: approvalColor.withValues(alpha: 0.35)),
+                    ),
+                    Chip(
+                      label: Text('Appointments ${_appointments.length}'),
+                      backgroundColor: const Color(0xFFCCFBF1),
+                      side: BorderSide.none,
+                    ),
+                    Chip(
+                      label: Text('Queue ${_wait.text} min'),
+                      backgroundColor: const Color(0xFFFFEDD5),
+                      side: BorderSide.none,
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        if (isClinic) ...[
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.calendar_month_outlined),
+              title: const Text('OPD Calendar'),
+              subtitle: Text(
+                'Today • ${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year}',
+              ),
+            ),
+          ),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.timer_outlined),
+              title: const Text('Doctor Slot Management'),
+              subtitle: Text(
+                'Doctors available: ${_doctors.text} • Avg wait: ${_wait.text} min',
+              ),
+            ),
+          ),
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              _hospitalStatCard('Doctors', _doctors.text),
+              _hospitalStatCard('Queue Min', _wait.text),
+              _hospitalStatCard('Appointments', '${_appointments.length}'),
+            ],
+          ),
+        ] else ...[
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              _hospitalStatCard('Beds', _beds.text),
+              _hospitalStatCard('ICU', _icu.text),
+              _hospitalStatCard('OT', _ot.text),
+              _hospitalStatCard('Doctors', _doctors.text),
+              _hospitalStatCard('Surgeons', _surgeons.text),
+              _hospitalStatCard('Appointments', '${_appointments.length}'),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildFacilityAppointmentsTab() {
+    if (_loadingAppointments) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    final filtered = _filteredAppointments();
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final status in const [
+              'all',
+              'pending',
+              'accepted',
+              'assigned',
+              'queued',
+              'completed',
+              'declined',
+            ])
+              ChoiceChip(
+                label: Text(status.toUpperCase()),
+                selected: _statusFilter == status,
+                onSelected: (_) => setState(() => _statusFilter = status),
+              ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        if (filtered.isEmpty)
+          const Card(
+            child: ListTile(
+              title: Text('No appointments for selected filter'),
+            ),
+          )
+        else
+          ...filtered.map((appointment) {
+            final actions = <AppointmentCardAction>[];
+            if (appointment.status == 'pending') {
+              actions.add(
+                AppointmentCardAction(
+                  label: 'Accept',
+                  semanticLabel: 'Accept appointment ${appointment.displayId}',
+                  onPressed: () => _transitionAppointment(appointment, 'accepted'),
+                ),
+              );
+              actions.add(
+                AppointmentCardAction(
+                  label: 'Decline',
+                  semanticLabel: 'Decline appointment ${appointment.displayId}',
+                  onPressed: () => _transitionAppointment(appointment, 'declined'),
+                ),
+              );
+            } else if (appointment.status == 'accepted' ||
+                appointment.status == 'reschedule_requested') {
+              actions.add(
+                AppointmentCardAction(
+                  label: 'Assign',
+                  semanticLabel: 'Assign doctor and time for ${appointment.displayId}',
+                  onPressed: () => _openAssignDialog(appointment),
+                ),
+              );
+              actions.add(
+                AppointmentCardAction(
+                  label: 'HQR',
+                  semanticLabel: 'Generate HQR for ${appointment.displayId}',
+                  onPressed: () => _openHqrForAppointment(appointment),
+                ),
+              );
+            } else if (appointment.status == 'assigned') {
+              actions.add(
+                AppointmentCardAction(
+                  label: 'Queue',
+                  semanticLabel: 'Set queue position for ${appointment.displayId}',
+                  onPressed: () => _openQueueDialog(appointment),
+                ),
+              );
+              actions.add(
+                AppointmentCardAction(
+                  label: 'HQR',
+                  semanticLabel: 'Generate HQR for ${appointment.displayId}',
+                  onPressed: () => _openHqrForAppointment(appointment),
+                ),
+              );
+            } else if (appointment.status == 'queued') {
+              actions.add(
+                AppointmentCardAction(
+                  label: 'Complete',
+                  semanticLabel: 'Mark appointment ${appointment.displayId} complete',
+                  onPressed: () => _transitionAppointment(appointment, 'completed'),
+                ),
+              );
+              actions.add(
+                AppointmentCardAction(
+                  label: 'HQR',
+                  semanticLabel: 'Generate HQR for ${appointment.displayId}',
+                  onPressed: () => _openHqrForAppointment(appointment),
+                ),
+              );
+            }
+            return AppointmentCard(
+              appointment: appointment,
+              showHospitalName: false,
+              actions: actions,
+            );
+          }),
+      ],
+    );
+  }
+
+  Widget _buildFacilitySettingsOrProfile(bool isClinic) {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        _nField(_hospitalId, '${widget.role.label} ID'),
+        _nField(_doctors, 'Doctors Available'),
+        _nField(_wait, 'Estimated Wait (minutes)'),
+        if (!isClinic) ...[
+          _nField(_beds, 'Beds Available'),
+          _nField(_icu, 'ICU Available'),
+          _nField(_ot, 'OT Available'),
+          _nField(_surgeons, 'Surgeons Available'),
+        ],
+        const SizedBox(height: 10),
+        FilledButton(
+          onPressed: (_saving || _accountStatus != 'approved') ? null : _save,
+          child: Text(_saving ? 'Saving...' : 'Update Live Availability'),
+        ),
+        const SizedBox(height: 10),
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.info_outline),
+            title: Text('${widget.role.label} profile'),
+            subtitle: Text(
+              '${widget.hospital.name}\n${widget.hospital.location} • ${widget.hospital.email}',
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -1908,8 +2902,10 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
   }
 
   Widget _hospitalStatCard(String label, String value) {
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final cardWidth = ((screenWidth - 48) / 2).clamp(150.0, 220.0);
     return SizedBox(
-      width: 150,
+      width: cardWidth,
       child: Card(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
@@ -1928,6 +2924,480 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+class AppointmentCardAction {
+  const AppointmentCardAction({
+    required this.label,
+    required this.semanticLabel,
+    required this.onPressed,
+  });
+
+  final String label;
+  final String semanticLabel;
+  final VoidCallback onPressed;
+}
+
+class AppointmentCard extends StatelessWidget {
+  const AppointmentCard({
+    super.key,
+    required this.appointment,
+    required this.showHospitalName,
+    this.highlighted = false,
+    this.actions = const [],
+  });
+
+  final AppointmentRecord appointment;
+  final bool showHospitalName;
+  final bool highlighted;
+  final List<AppointmentCardAction> actions;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      shape: RoundedRectangleBorder(
+        side: BorderSide(
+          color: highlighted ? const Color(0xFF0F766E) : Colors.transparent,
+          width: highlighted ? 2 : 0,
+        ),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Text(
+                  appointment.displayId,
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                ),
+                StatusBadge(status: appointment.status),
+                _TypeBadge(type: appointment.type),
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (showHospitalName) Text('Facility: ${appointment.hospitalName}'),
+            Text('Patient: ${appointment.patientName}'),
+            Text('Created: ${appointment.createdAt}'),
+            if ((appointment.assignedDoctor ?? '').isNotEmpty)
+              Text('Doctor: ${appointment.assignedDoctor}'),
+            if ((appointment.assignedTime ?? '').isNotEmpty)
+              Text('Time: ${appointment.assignedTime}'),
+            if (appointment.queuePosition != null)
+              Text('Queue position: ${appointment.queuePosition}'),
+            if (actions.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: actions
+                    .map(
+                      (action) => Semantics(
+                        button: true,
+                        label: action.semanticLabel,
+                        child: FilledButton.tonal(
+                          onPressed: action.onPressed,
+                          child: Text(action.label),
+                        ),
+                      ),
+                    )
+                    .toList(),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class StatusBadge extends StatelessWidget {
+  const StatusBadge({super.key, required this.status});
+
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    final normalized = status.toLowerCase();
+    final color = switch (normalized) {
+      'pending' => const Color(0xFFB45309),
+      'accepted' => const Color(0xFF0369A1),
+      'assigned' => const Color(0xFF4338CA),
+      'queued' => const Color(0xFF0F766E),
+      'completed' => const Color(0xFF15803D),
+      'declined' || 'canceled' => const Color(0xFFB91C1C),
+      'reschedule_requested' => const Color(0xFF7C2D12),
+      _ => const Color(0xFF374151),
+    };
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        normalized.replaceAll('_', ' ').toUpperCase(),
+        style: TextStyle(
+          color: color,
+          fontWeight: FontWeight.w700,
+          fontSize: 11,
+        ),
+      ),
+    );
+  }
+}
+
+class _TypeBadge extends StatelessWidget {
+  const _TypeBadge({required this.type});
+
+  final String type;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE0F2FE),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        type.toUpperCase(),
+        style: const TextStyle(
+          color: Color(0xFF0C4A6E),
+          fontWeight: FontWeight.w700,
+          fontSize: 11,
+        ),
+      ),
+    );
+  }
+}
+
+class NotificationTile extends StatelessWidget {
+  const NotificationTile({super.key, required this.notification});
+
+  final PatientNotification notification;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: 'Notification: ${notification.title}',
+      child: Card(
+        color: const Color(0xFFFFF7ED),
+        child: ListTile(
+          leading: const Icon(Icons.notifications_active_outlined),
+          title: Text(notification.title),
+          subtitle: Text(notification.message),
+        ),
+      ),
+    );
+  }
+}
+
+class AppointmentQrScannerScreen extends StatefulWidget {
+  const AppointmentQrScannerScreen({
+    super.key,
+    required this.appointments,
+    required this.api,
+    required this.patientId,
+  });
+
+  final List<AppointmentRecord> appointments;
+  final ApiService api;
+  final String patientId;
+
+  @override
+  State<AppointmentQrScannerScreen> createState() =>
+      _AppointmentQrScannerScreenState();
+}
+
+class _AppointmentQrScannerScreenState extends State<AppointmentQrScannerScreen> {
+  final MobileScannerController _scannerController = MobileScannerController(
+    detectionSpeed: DetectionSpeed.noDuplicates,
+  );
+  final TextEditingController _manualCodeController = TextEditingController();
+  bool _handledScan = false;
+  String? _scanError;
+
+  @override
+  void dispose() {
+    _scannerController.dispose();
+    _manualCodeController.dispose();
+    super.dispose();
+  }
+
+  String _extractToken(String raw) {
+    final cleaned = raw.trim();
+    if (cleaned.isEmpty) return '';
+    final uri = Uri.tryParse(cleaned);
+    if (uri != null) {
+      final qpToken = uri.queryParameters['token'];
+      if (qpToken != null && qpToken.trim().isNotEmpty) {
+        return qpToken.trim();
+      }
+    }
+    return cleaned;
+  }
+
+  Future<void> _handleScannedValue(String raw) async {
+    if (_handledScan) return;
+    final token = _extractToken(raw);
+    if (token.isEmpty) {
+      setState(() {
+        _scanError = 'Missing token in scanned content.';
+      });
+      return;
+    }
+    final result = await widget.api.verifyHqr(
+      token: token,
+      patientId: widget.patientId,
+    );
+    if (!mounted) return;
+    if (!result.verified) {
+      setState(() {
+        _scanError = result.reason;
+      });
+      return;
+    }
+    AppointmentRecord? appointment;
+    for (final item in widget.appointments) {
+      if (item.id == result.bookingId) {
+        appointment = item;
+        break;
+      }
+    }
+    if (appointment == null) {
+      setState(() {
+        _scanError = 'Verified, but appointment is not loaded locally. Pull to refresh.';
+      });
+      return;
+    }
+    _handledScan = true;
+    Navigator.of(context).pop(appointment);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Scan Appointment QR')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          AspectRatio(
+            aspectRatio: 1,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(24),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  MobileScanner(
+                    controller: _scannerController,
+                    onDetect: (capture) {
+                      if (capture.barcodes.isEmpty) return;
+                      final code = capture.barcodes.first.rawValue;
+                      if (code == null) return;
+                      _handleScannedValue(code);
+                    },
+                    errorBuilder: (context, error, child) {
+                      return Container(
+                        color: const Color(0xFF0F172A),
+                        alignment: Alignment.center,
+                        padding: const EdgeInsets.all(20),
+                        child: Text(
+                          'Camera unavailable.\nUse manual code entry below.',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(color: Colors.white),
+                        ),
+                      );
+                    },
+                  ),
+                  IgnorePointer(
+                    child: Center(
+                      child: Container(
+                        width: 220,
+                        height: 220,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(24),
+                          border: Border.all(
+                            color: const Color(0xFF99F6E4),
+                            width: 3,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            'Scan HQR token (or verify URL), or paste token manually.',
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _manualCodeController,
+            decoration: const InputDecoration(
+              labelText: 'Manual token / URL',
+              hintText: 'https://.../api/hqr/verify?token=...',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          FilledButton.tonal(
+            onPressed: () => _handleScannedValue(_manualCodeController.text),
+            child: const Text('Open Appointment'),
+          ),
+          if (_scanError != null) ...[
+            const SizedBox(height: 12),
+            Text(
+              _scanError!,
+              style: const TextStyle(color: Color(0xFFB91C1C)),
+            ),
+          ],
+          const SizedBox(height: 16),
+          if (widget.appointments.isNotEmpty)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Recent appointment codes',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 8),
+                    ...widget.appointments.take(3).map(
+                      (appointment) => ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(appointment.displayId),
+                        subtitle: Text(
+                          '${appointment.hospitalName} • ${appointment.status}',
+                        ),
+                        trailing: IconButton(
+                          onPressed: () => _handleScannedValue(appointment.displayId),
+                          icon: const Icon(Icons.open_in_new),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class SlotSelection {
+  const SlotSelection({required this.doctor, required this.time});
+
+  final String doctor;
+  final String time;
+}
+
+class TimeSlotPickerDialog extends StatefulWidget {
+  const TimeSlotPickerDialog({
+    super.key,
+    required this.title,
+    this.initialDoctor,
+    this.initialTime,
+  });
+
+  final String title;
+  final String? initialDoctor;
+  final String? initialTime;
+
+  @override
+  State<TimeSlotPickerDialog> createState() => _TimeSlotPickerDialogState();
+}
+
+class _TimeSlotPickerDialogState extends State<TimeSlotPickerDialog> {
+  late final TextEditingController _doctorController;
+  late String _selectedTime;
+  static const _slots = [
+    '09:00 AM',
+    '10:30 AM',
+    '12:00 PM',
+    '02:30 PM',
+    '04:00 PM',
+    '06:30 PM',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _doctorController = TextEditingController(text: widget.initialDoctor ?? '');
+    _selectedTime = _slots.contains(widget.initialTime)
+        ? widget.initialTime!
+        : _slots.first;
+  }
+
+  @override
+  void dispose() {
+    _doctorController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.title),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: _doctorController,
+            decoration: const InputDecoration(
+              labelText: 'Doctor name',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<String>(
+            initialValue: _selectedTime,
+            decoration: const InputDecoration(
+              labelText: 'Time slot',
+              border: OutlineInputBorder(),
+            ),
+            items: _slots
+                .map((slot) => DropdownMenuItem(value: slot, child: Text(slot)))
+                .toList(),
+            onChanged: (value) {
+              if (value == null) return;
+              setState(() => _selectedTime = value);
+            },
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () {
+            final doctor = _doctorController.text.trim();
+            if (doctor.isEmpty) return;
+            Navigator.of(
+              context,
+            ).pop(SlotSelection(doctor: doctor, time: _selectedTime));
+          },
+          child: const Text('Assign'),
+        ),
+      ],
     );
   }
 }

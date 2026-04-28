@@ -1,0 +1,48 @@
+{
+  "name": "bookmyhospital-git",
+  "version": "1.0.0",
+  "description": "🔐 Security: API keys stored in Supabase Edge Functions. RLS enforces data isolation. HQR validation is server-side only. Zero client-side key exposure.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "phase1:tools:check": "npx supabase --version && npx wrangler --version",
+    "phase1:supabase:init": "npx supabase init",
+    "phase1:supabase:login": "npx supabase login",
+    "phase1:supabase:link": "npx supabase link --project-ref",
+    "phase1:supabase:db:push": "npx supabase db push",
+    "phase1:proxy:dev": "npx wrangler dev --config infra/cloudflare/wrangler.toml",
+    "phase1:proxy:deploy": "npx wrangler deploy --config infra/cloudflare/wrangler.toml",
+    "phase1:proxy:secret:url": "npx wrangler secret put SUPABASE_URL --config infra/cloudflare/wrangler.toml",
+    "phase1:proxy:secret:anon": "npx wrangler secret put SUPABASE_ANON_KEY --config infra/cloudflare/wrangler.toml",
+    "phase2:supabase:db:push": "npx supabase db push",
+    "phase2:functions:deploy": "npx supabase functions deploy book && npx supabase functions deploy accept && npx supabase functions deploy decline && npx supabase functions deploy update && npx supabase functions deploy complete && npx supabase functions deploy cancel",
+    "phase2:functions:serve": "npx supabase functions serve",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0mpardeshi/bookmyhospital.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/0mpardeshi/bookmyhospital/issues"
+  },
+  "homepage": "https://github.com/0mpardeshi/bookmyhospital#readme",
+  "devDependencies": {
+    "supabase": "^2.95.2",
+    "wrangler": "^4.85.0"
+  },
+  "dependencies": {
+    "cloudinary": "^2.10.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "mongoose": "^9.6.0",
+    "multer": "^2.1.1",
+    "socket.io": "^4.8.3"
+  }
+}

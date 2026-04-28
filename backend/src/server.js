@@ -3,6 +3,7 @@ require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 
 const fs = require('fs');
 const { Readable } = require('stream');
+const crypto = require('crypto');
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
@@ -21,6 +22,8 @@ const {
   updateHospitalAvailability,
   createBooking,
   listBookings,
+  getBookingById,
+  updateBooking,
   createComplaint,
   listComplaints,
   createNotification,
@@ -71,6 +74,77 @@ const upload = multer({ storage: multer.memoryStorage() });
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 app.use('/uploads', express.static(uploadsRoot));
+
+const HQR_WINDOW_SECONDS = 900;
+const HQR_RATE_LIMIT_PER_MINUTE = 5;
+const hqrSecret = String(process.env.HQR_SIGNING_SECRET || 'dev_hqr_secret_change_me').trim();
+const hqrIssuedTokens = new Map(); // tokenHash -> { bookingId, facilityId, expiresAt, usedAt }
+const hqrAttemptsByPatient = new Map(); // patientId -> number[]
+
+function base64UrlEncode(value) {
+  const input = Buffer.isBuffer(value) ? value : Buffer.from(String(value), 'utf8');
+  return input.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function base64UrlDecode(value) {
+  const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+  const padLength = (4 - (normalized.length % 4)) % 4;
+  return Buffer.from(normalized + '='.repeat(padLength), 'base64');
+}
+
+function canonicalHqrPayload(payload) {
+  return `${payload.bookingId}.${payload.ts}.${payload.facilityId}`;
+}
+
+function signHqr(payload) {
+  const payloadB64 = base64UrlEncode(JSON.stringify(payload));
+  const signature = crypto
+    .createHmac('sha256', hqrSecret)
+    .update(canonicalHqrPayload(payload))
+    .digest();
+  return `${payloadB64}.${base64UrlEncode(signature)}`;
+}
+
+function verifyAndParseHqr(token) {
+  const parts = String(token || '').trim().split('.');
+  if (parts.length !== 2) throw new Error('Malformed token');
+  const payload = JSON.parse(base64UrlDecode(parts[0]).toString('utf8'));
+  const bookingId = String(payload.bookingId || '').trim();
+  const facilityId = String(payload.facilityId || '').trim();
+  const ts = Number(payload.ts || 0);
+  if (!bookingId || !facilityId || !Number.isFinite(ts)) {
+    throw new Error('Token payload missing fields');
+  }
+
+  const expectedSig = base64UrlEncode(
+    crypto.createHmac('sha256', hqrSecret).update(`${bookingId}.${ts}.${facilityId}`).digest(),
+  );
+  if (expectedSig !== parts[1]) throw new Error('Token signature mismatch');
+  const tokenHash = crypto.createHash('sha256').update(String(token)).digest('hex');
+  return { bookingId, facilityId, ts, tokenHash };
+}
+
+function enforceRateLimit(patientId) {
+  const now = Date.now();
+  const existing = hqrAttemptsByPatient.get(patientId) || [];
+  const recent = existing.filter((t) => now - t < 60_000);
+  if (recent.length >= HQR_RATE_LIMIT_PER_MINUTE) {
+    throw new Error('Rate limit exceeded: max 5 attempts/min');
+  }
+  recent.push(now);
+  hqrAttemptsByPatient.set(patientId, recent);
+}
+
+async function auditHqrAttempt({ patientId, bookingId, success, reason }) {
+  if (!patientId) return;
+  await createNotification({
+    patientId,
+    hospitalId: null,
+    title: success ? 'HQR Verification Success' : 'HQR Verification Failed',
+    message: `${reason}${bookingId ? ` (${bookingId})` : ''}`,
+    type: success ? 'hqr_success' : 'hqr_failed',
+  });
+}
 
 function uploadStream(buffer, options) {
   return new Promise((resolve, reject) => {
@@ -376,6 +450,15 @@ app.get('/api/patients/:patientId/notifications', async (req, res) => {
   return res.json({ notifications });
 });
 
+app.get('/api/patients/:patientId/bookings', async (req, res) => {
+  const patientId = String(req.params.patientId || '').trim();
+  if (!patientId) {
+    return res.status(400).json({ error: 'patientId is required' });
+  }
+  const bookings = await listBookings({ patientId });
+  return res.json({ bookings });
+});
+
 app.post('/api/hospitals/:id/rate', async (req, res) => {
   const { rating } = req.body || {};
   const safeRating = Number(rating);
@@ -536,6 +619,215 @@ app.post('/api/bookings', async (req, res) => {
   io.emit('booking:created', booking);
   await refreshSnapshot();
   return res.status(201).json({ booking });
+});
+
+app.patch('/api/bookings/:id', async (req, res) => {
+  const bookingId = String(req.params.id || '').trim();
+  if (!bookingId) {
+    return res.status(400).json({ error: 'booking id is required' });
+  }
+
+  const current = await getBookingById(bookingId);
+  if (!current) return respondNotFound(res, 'Booking not found');
+
+  const payload = req.body || {};
+  const next = {};
+  const status = String(payload.status || '').trim().toLowerCase();
+  if (status) {
+    const allowedStatuses = new Set([
+      'pending',
+      'accepted',
+      'declined',
+      'assigned',
+      'queued',
+      'completed',
+      'canceled',
+      'reschedule_requested',
+    ]);
+    if (!allowedStatuses.has(status)) {
+      return res.status(400).json({ error: 'Invalid booking status' });
+    }
+    next.status = status;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(payload, 'assignedDoctor')) {
+    next.assignedDoctor = payload.assignedDoctor ? String(payload.assignedDoctor).trim() : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, 'assignedTime')) {
+    next.assignedTime = payload.assignedTime ? String(payload.assignedTime).trim() : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, 'queuePosition')) {
+    const parsedQueue = Number(payload.queuePosition);
+    next.queuePosition = Number.isFinite(parsedQueue) && parsedQueue > 0 ? parsedQueue : null;
+  }
+
+  if (!Object.keys(next).length) {
+    return res.status(400).json({ error: 'No valid update fields provided' });
+  }
+
+  const updated = await updateBooking(bookingId, next);
+  if (!updated) return respondNotFound(res, 'Booking not found');
+
+  if (updated.patientId) {
+    let message = `Appointment ${updated.id || updated.bookingId} updated.`;
+    if (next.status) {
+      message = `Appointment status changed to ${next.status.replaceAll('_', ' ')}.`;
+    } else if (next.assignedDoctor || next.assignedTime) {
+      message = `Appointment assignment updated${next.assignedDoctor ? `: Dr. ${next.assignedDoctor}` : ''}${next.assignedTime ? ` at ${next.assignedTime}` : ''}.`;
+    } else if (Object.prototype.hasOwnProperty.call(next, 'queuePosition')) {
+      message = next.queuePosition
+        ? `Your queue position is ${next.queuePosition}.`
+        : 'Queue position updated.';
+    }
+    const notification = await createNotification({
+      patientId: updated.patientId,
+      hospitalId: updated.hospitalId,
+      title: 'Appointment Update',
+      message,
+      type: next.status || 'booking_update',
+    });
+    io.emit('patient:notification', notification);
+  }
+
+  io.emit('booking:updated', updated);
+  await refreshSnapshot();
+  return res.json({ booking: updated });
+});
+
+app.post('/api/hqr/generate', async (req, res) => {
+  const { bookingId, hospitalId } = req.body || {};
+  const normalizedBookingId = String(bookingId || '').trim();
+  const normalizedHospitalId = String(hospitalId || '').trim();
+  if (!normalizedBookingId || !normalizedHospitalId) {
+    return res.status(400).json({ error: 'bookingId and hospitalId are required' });
+  }
+
+  const booking = await getBookingById(normalizedBookingId);
+  if (!booking) return respondNotFound(res, 'Booking not found');
+  if (String(booking.hospitalId || '') !== normalizedHospitalId) {
+    return res.status(403).json({ error: 'Facility does not own this booking' });
+  }
+  if (String(booking.status || '').toLowerCase() !== 'accepted') {
+    return res.status(409).json({ error: 'HQR can be generated only for accepted appointments' });
+  }
+
+  const ts = Math.floor(Date.now() / 1000);
+  const token = signHqr({
+    bookingId: String(booking.id || booking.bookingId),
+    facilityId: normalizedHospitalId,
+    ts,
+  });
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  const expiresAt = new Date((ts + HQR_WINDOW_SECONDS) * 1000).toISOString();
+  hqrIssuedTokens.set(tokenHash, {
+    bookingId: String(booking.id || booking.bookingId),
+    facilityId: normalizedHospitalId,
+    expiresAt,
+    usedAt: null,
+  });
+
+  const base = (process.env.API_BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
+  const verifyUrl = `${base}/api/hqr/verify?token=${encodeURIComponent(token)}`;
+  return res.json({
+    ok: true,
+    token,
+    verifyUrl,
+    expiresInSeconds: HQR_WINDOW_SECONDS,
+    expiresAt,
+  });
+});
+
+app.post('/api/hqr/verify', async (req, res) => {
+  const { token, patientId } = req.body || {};
+  const normalizedPatientId = String(patientId || '').trim();
+  if (!normalizedPatientId) return res.status(400).json({ ok: false, verified: false, reason: 'patientId is required' });
+  try {
+    enforceRateLimit(normalizedPatientId);
+  } catch (error) {
+    await auditHqrAttempt({ patientId: normalizedPatientId, success: false, reason: String(error.message || error) });
+    return res.status(429).json({ ok: false, verified: false, reason: String(error.message || error) });
+  }
+
+  const rawToken = String(token || '').trim();
+  if (!rawToken) {
+    await auditHqrAttempt({ patientId: normalizedPatientId, success: false, reason: 'Missing token' });
+    return res.status(400).json({ ok: false, verified: false, reason: 'Missing token' });
+  }
+
+  let parsed;
+  try {
+    parsed = verifyAndParseHqr(rawToken);
+  } catch (error) {
+    await auditHqrAttempt({ patientId: normalizedPatientId, success: false, reason: String(error.message || error) });
+    return res.status(401).json({ ok: false, verified: false, reason: String(error.message || error) });
+  }
+
+  if (Math.abs(Math.floor(Date.now() / 1000) - parsed.ts) > HQR_WINDOW_SECONDS) {
+    await auditHqrAttempt({
+      patientId: normalizedPatientId,
+      bookingId: parsed.bookingId,
+      success: false,
+      reason: 'Token expired',
+    });
+    return res.status(401).json({ ok: false, verified: false, reason: 'Token expired' });
+  }
+
+  const issued = hqrIssuedTokens.get(parsed.tokenHash);
+  if (!issued) {
+    await auditHqrAttempt({
+      patientId: normalizedPatientId,
+      bookingId: parsed.bookingId,
+      success: false,
+      reason: 'Token not issued by server',
+    });
+    return res.status(401).json({ ok: false, verified: false, reason: 'Token not issued by server' });
+  }
+  if (issued.usedAt) {
+    await auditHqrAttempt({
+      patientId: normalizedPatientId,
+      bookingId: parsed.bookingId,
+      success: false,
+      reason: 'Token already used',
+    });
+    return res.status(409).json({ ok: false, verified: false, reason: 'Token already used' });
+  }
+  if (new Date(issued.expiresAt).getTime() < Date.now()) {
+    await auditHqrAttempt({
+      patientId: normalizedPatientId,
+      bookingId: parsed.bookingId,
+      success: false,
+      reason: 'Token expired',
+    });
+    return res.status(401).json({ ok: false, verified: false, reason: 'Token expired' });
+  }
+
+  const booking = await getBookingById(parsed.bookingId);
+  if (!booking) {
+    await auditHqrAttempt({ patientId: normalizedPatientId, bookingId: parsed.bookingId, success: false, reason: 'Booking not found' });
+    return res.status(404).json({ ok: false, verified: false, reason: 'Booking not found' });
+  }
+  if (String(booking.status || '').toLowerCase() !== 'accepted') {
+    await auditHqrAttempt({ patientId: normalizedPatientId, bookingId: parsed.bookingId, success: false, reason: 'Booking is not accepted' });
+    return res.status(409).json({ ok: false, verified: false, reason: 'Booking is not accepted' });
+  }
+  if (String(booking.patientId || '') !== normalizedPatientId) {
+    await auditHqrAttempt({ patientId: normalizedPatientId, bookingId: parsed.bookingId, success: false, reason: 'Patient does not own appointment' });
+    return res.status(403).json({ ok: false, verified: false, reason: 'Patient does not own appointment' });
+  }
+  if (String(booking.hospitalId || '') !== parsed.facilityId) {
+    await auditHqrAttempt({ patientId: normalizedPatientId, bookingId: parsed.bookingId, success: false, reason: 'Facility mismatch' });
+    return res.status(409).json({ ok: false, verified: false, reason: 'Facility mismatch' });
+  }
+
+  issued.usedAt = new Date().toISOString();
+  hqrIssuedTokens.set(parsed.tokenHash, issued);
+  await auditHqrAttempt({ patientId: normalizedPatientId, bookingId: parsed.bookingId, success: true, reason: 'Verified' });
+  return res.json({
+    ok: true,
+    verified: true,
+    bookingId: String(booking.id || booking.bookingId),
+    message: 'Verified',
+  });
 });
 
 app.post('/api/complaints', upload.array('proofs', 5), async (req, res) => {

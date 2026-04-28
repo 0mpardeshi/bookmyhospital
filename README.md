@@ -1,5 +1,7 @@
 # BookMyHospital (MVP)
 
+🔐 Security: API keys stored in Supabase Edge Functions. RLS enforces data isolation. HQR validation is server-side only. Zero client-side key exposure.
+
 Two installable Android apps plus backend API:
 
 - `apps/bmh_client`: Patient + Hospital app

@@ -1,0 +1,8 @@
+# Cloudflare Worker configuration for Supabase endpoint protection.
+name = "bookmyhospital-supabase-proxy"
+main = "worker.js"
+compatibility_date = "2026-04-25"
+workers_dev = true
+
+# Optional custom route can be configured after DNS setup.
+# routes = ["api.yourdomain.com/*"]
