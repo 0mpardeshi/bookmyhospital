@@ -27,3 +27,5 @@ services:
         value: bookmyhospital/complaints
       - key: API_BASE_URL
         sync: false
+      - key: HQR_SIGNING_SECRET
+        sync: false
