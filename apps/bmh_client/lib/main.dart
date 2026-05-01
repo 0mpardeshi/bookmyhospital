@@ -1710,8 +1710,18 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final currentTabView = _selectedTabIndex == 0
+        ? _buildHomeTab()
+        : _selectedTabIndex == 1
+        ? _buildAppointmentsTab()
+        : _buildProfileTab();
+
     return Scaffold(
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
+        surfaceTintColor: Colors.transparent,
+        backgroundColor: const Color(0xFFE6FFFA).withValues(alpha: 0.9),
+        elevation: 0,
         title: Text(
           _selectedTabIndex == 0
               ? 'Patient Home'
@@ -1766,15 +1776,38 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
           ),
         ],
       ),
-      body: IndexedStack(
-        index: _selectedTabIndex,
-        children: [
-          _buildHomeTab(),
-          _buildAppointmentsTab(),
-          _buildProfileTab(),
-        ],
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFFE6FFFA), Color(0xFFF7FFFC), Color(0xFFEFFDF8)],
+          ),
+        ),
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 320),
+          switchInCurve: Curves.easeOutCubic,
+          switchOutCurve: Curves.easeInCubic,
+          transitionBuilder: (child, animation) {
+            final offsetAnimation = Tween<Offset>(
+              begin: const Offset(0.02, 0),
+              end: Offset.zero,
+            ).animate(animation);
+            return FadeTransition(
+              opacity: animation,
+              child: SlideTransition(position: offsetAnimation, child: child),
+            );
+          },
+          child: KeyedSubtree(
+            key: ValueKey<int>(_selectedTabIndex),
+            child: currentTabView,
+          ),
+        ),
       ),
       bottomNavigationBar: NavigationBar(
+        animationDuration: const Duration(milliseconds: 420),
+        backgroundColor: const Color(0xFFEFFAF6),
+        indicatorColor: const Color(0xFFCCFBF1),
         selectedIndex: _selectedTabIndex,
         destinations: const [
           NavigationDestination(
@@ -1806,9 +1839,16 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
     }
     final filtered = _hospitals.where((h) => h.role == _homeFilter).toList();
     return ListView(
+      physics: const BouncingScrollPhysics(),
       padding: const EdgeInsets.all(12),
       children: [
         Card(
+          elevation: 0,
+          color: const Color(0xFFF8FFFD),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+            side: const BorderSide(color: Color(0xFFD9FBEF)),
+          ),
           child: ListTile(
             title: Text('Welcome, ${widget.patientName}'),
             subtitle: Text(
@@ -1844,7 +1884,12 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
           ),
         ),
         Card(
-          color: const Color(0xFFE0F2FE),
+          elevation: 0,
+          color: const Color(0xFFE6F7FF),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+            side: const BorderSide(color: Color(0xFFD0ECFF)),
+          ),
           child: ListTile(
             title: Text(
               _homeFilter == FacilityRole.hospital
@@ -1862,6 +1907,12 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
         ),
         if (filtered.isEmpty)
           Card(
+            elevation: 0,
+            color: const Color(0xFFF8FFFD),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+              side: const BorderSide(color: Color(0xFFD9FBEF)),
+            ),
             child: Padding(
               padding: const EdgeInsets.all(24),
               child: Column(
@@ -1885,109 +1936,117 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
             ),
           ),
         ...filtered.map(
-          (h) => Card(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(18),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(14),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: h.isClinic
-                              ? const Color(0xFFE0F2FE)
-                              : const Color(0xFFCCFBF1),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              h.isClinic
-                                  ? Icons.medical_services
-                                  : Icons.local_hospital,
-                              size: 14,
-                              color: h.isClinic
-                                  ? const Color(0xFF1E40AF)
-                                  : const Color(0xFF0D9488),
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              h.isClinic ? 'Clinic' : 'Hospital',
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600,
+          (h) => AnimatedContainer(
+            duration: const Duration(milliseconds: 260),
+            curve: Curves.easeOutCubic,
+            margin: const EdgeInsets.only(bottom: 2),
+            child: Card(
+              elevation: 0,
+              color: const Color(0xFFF9FFFD),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(18),
+                side: const BorderSide(color: Color(0xFFD9FBEF)),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: h.isClinic
+                                ? const Color(0xFFE0F2FE)
+                                : const Color(0xFFCCFBF1),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                h.isClinic
+                                    ? Icons.medical_services
+                                    : Icons.local_hospital,
+                                size: 14,
                                 color: h.isClinic
                                     ? const Color(0xFF1E40AF)
                                     : const Color(0xFF0D9488),
                               ),
-                            ),
-                          ],
+                              const SizedBox(width: 4),
+                              Text(
+                                h.isClinic ? 'Clinic' : 'Hospital',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: h.isClinic
+                                      ? const Color(0xFF1E40AF)
+                                      : const Color(0xFF0D9488),
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    h.name,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
+                      ],
                     ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '${h.location} • Rating ${h.avgReview.toStringAsFixed(1)} (${h.ratingsCount})',
-                  ),
-                  const SizedBox(height: 6),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      _metricChip('Beds ${h.bedsAvailable}'),
-                      _metricChip('ICU ${h.icuAvailable}'),
-                      _metricChip('OT ${h.otAvailable}'),
-                      _metricChip('Doctors ${h.doctorsAvailable}'),
-                      _metricChip('Wait ${h.queueWaitMinutes}m'),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Text('Specialities: ${h.specialities.join(', ')}'),
-                  const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      FilledButton.tonal(
-                        onPressed: () => _book(h, 'Appointment'),
-                        child: const Text('Book Appointment'),
+                    const SizedBox(height: 6),
+                    Text(
+                      h.name,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
                       ),
-                      FilledButton.tonal(
-                        onPressed: () => _book(h, 'Emergency'),
-                        child: const Text('Emergency'),
-                      ),
-                      OutlinedButton(
-                        onPressed: _openQrEntryPoint,
-                        child: const Text('QR Scanner'),
-                      ),
-                      OutlinedButton(
-                        onPressed: () => _complain(h),
-                        child: const Text('Raise Complaint'),
-                      ),
-                      OutlinedButton(
-                        onPressed: () => _rateHospital(h),
-                        child: const Text('Rate Facility'),
-                      ),
-                    ],
-                  ),
-                ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${h.location} • Rating ${h.avgReview.toStringAsFixed(1)} (${h.ratingsCount})',
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        _metricChip('Beds ${h.bedsAvailable}'),
+                        _metricChip('ICU ${h.icuAvailable}'),
+                        _metricChip('OT ${h.otAvailable}'),
+                        _metricChip('Doctors ${h.doctorsAvailable}'),
+                        _metricChip('Wait ${h.queueWaitMinutes}m'),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text('Specialities: ${h.specialities.join(', ')}'),
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        FilledButton.tonal(
+                          onPressed: () => _book(h, 'Appointment'),
+                          child: const Text('Book Appointment'),
+                        ),
+                        FilledButton.tonal(
+                          onPressed: () => _book(h, 'Emergency'),
+                          child: const Text('Emergency'),
+                        ),
+                        OutlinedButton(
+                          onPressed: _openQrEntryPoint,
+                          child: const Text('QR Scanner'),
+                        ),
+                        OutlinedButton(
+                          onPressed: () => _complain(h),
+                          child: const Text('Raise Complaint'),
+                        ),
+                        OutlinedButton(
+                          onPressed: () => _rateHospital(h),
+                          child: const Text('Rate Facility'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -2002,10 +2061,17 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
     }
     if (_appointments.isEmpty) {
       return ListView(
+        physics: const BouncingScrollPhysics(),
         padding: const EdgeInsets.all(16),
-        children: const [
+        children: [
           Card(
-            child: ListTile(
+            elevation: 0,
+            color: const Color(0xFFF8FFFD),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+              side: const BorderSide(color: Color(0xFFD9FBEF)),
+            ),
+            child: const ListTile(
               title: Text('No appointments yet'),
               subtitle: Text(
                 'Book from Home tab. Offline cache will keep your last synced appointments.',
@@ -2016,6 +2082,7 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
       );
     }
     return ListView(
+      physics: const BouncingScrollPhysics(),
       padding: const EdgeInsets.all(12),
       children: [
         ..._appointments.map((appointment) {
@@ -2059,9 +2126,16 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
 
   Widget _buildProfileTab() {
     return ListView(
+      physics: const BouncingScrollPhysics(),
       padding: const EdgeInsets.all(16),
       children: [
         Card(
+          elevation: 0,
+          color: const Color(0xFFF8FFFD),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+            side: const BorderSide(color: Color(0xFFD9FBEF)),
+          ),
           child: ListTile(
             leading: const Icon(Icons.person),
             title: Text(widget.patientName),
@@ -2069,6 +2143,12 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
           ),
         ),
         Card(
+          elevation: 0,
+          color: const Color(0xFFF8FFFD),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+            side: const BorderSide(color: Color(0xFFD9FBEF)),
+          ),
           child: ListTile(
             leading: const Icon(Icons.badge_outlined),
             title: const Text('Patient Unique ID'),
@@ -2078,6 +2158,12 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
           ),
         ),
         Card(
+          elevation: 0,
+          color: const Color(0xFFF8FFFD),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+            side: const BorderSide(color: Color(0xFFD9FBEF)),
+          ),
           child: ListTile(
             leading: const Icon(Icons.sync),
             title: const Text('Sync health'),
@@ -3314,68 +3400,74 @@ class AppointmentCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      shape: RoundedRectangleBorder(
-        side: BorderSide(
-          color: highlighted ? const Color(0xFF0F766E) : Colors.transparent,
-          width: highlighted ? 2 : 0,
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 240),
+      curve: Curves.easeOutCubic,
+      child: Card(
+        elevation: 0,
+        color: const Color(0xFFF8FFFD),
+        shape: RoundedRectangleBorder(
+          side: BorderSide(
+            color: highlighted ? const Color(0xFF0F766E) : Colors.transparent,
+            width: highlighted ? 2 : 0,
+          ),
+          borderRadius: BorderRadius.circular(12),
         ),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                Text(
-                  appointment.displayId,
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                StatusBadge(status: appointment.status),
-                _TypeBadge(type: appointment.type),
-                _FacilityEntityBadge(facilityType: appointment.facilityType),
-              ],
-            ),
-            const SizedBox(height: 8),
-            if (showHospitalName)
-              Text(
-                'Facility: ${appointment.hospitalName} • ${appointment.facilityRole.label}',
-              ),
-            Text('Patient: ${appointment.patientName}'),
-            Text('Created: ${appointment.createdAt}'),
-            if ((appointment.assignedDoctor ?? '').isNotEmpty)
-              Text('Doctor: ${appointment.assignedDoctor}'),
-            if ((appointment.assignedTime ?? '').isNotEmpty)
-              Text('Time: ${appointment.assignedTime}'),
-            if (appointment.queuePosition != null)
-              Text('Queue position: ${appointment.queuePosition}'),
-            if (actions.isNotEmpty) ...[
-              const SizedBox(height: 10),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
-                children: actions
-                    .map(
-                      (action) => Semantics(
-                        button: true,
-                        label: action.semanticLabel,
-                        child: FilledButton.tonal(
-                          onPressed: action.onPressed,
-                          child: Text(action.label),
-                        ),
-                      ),
-                    )
-                    .toList(),
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Text(
+                    appointment.displayId,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  StatusBadge(status: appointment.status),
+                  _TypeBadge(type: appointment.type),
+                  _FacilityEntityBadge(facilityType: appointment.facilityType),
+                ],
               ),
+              const SizedBox(height: 8),
+              if (showHospitalName)
+                Text(
+                  'Facility: ${appointment.hospitalName} • ${appointment.facilityRole.label}',
+                ),
+              Text('Patient: ${appointment.patientName}'),
+              Text('Created: ${appointment.createdAt}'),
+              if ((appointment.assignedDoctor ?? '').isNotEmpty)
+                Text('Doctor: ${appointment.assignedDoctor}'),
+              if ((appointment.assignedTime ?? '').isNotEmpty)
+                Text('Time: ${appointment.assignedTime}'),
+              if (appointment.queuePosition != null)
+                Text('Queue position: ${appointment.queuePosition}'),
+              if (actions.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: actions
+                      .map(
+                        (action) => Semantics(
+                          button: true,
+                          label: action.semanticLabel,
+                          child: FilledButton.tonal(
+                            onPressed: action.onPressed,
+                            child: Text(action.label),
+                          ),
+                        ),
+                      )
+                      .toList(),
+                ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );
@@ -3560,10 +3652,15 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
         _closeWithResult();
       },
       child: Scaffold(
+        backgroundColor: const Color(0xFFE6FFFA),
         appBar: AppBar(
+          surfaceTintColor: Colors.transparent,
+          backgroundColor: const Color(0xFFE6FFFA).withValues(alpha: 0.9),
+          elevation: 0,
           leading: IconButton(
             onPressed: _closeWithResult,
             icon: const Icon(Icons.arrow_back),
@@ -3575,6 +3672,7 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
                 child: Text('No unseen notifications. Starred ones stay here.'),
               )
             : ListView.builder(
+                physics: const BouncingScrollPhysics(),
                 padding: const EdgeInsets.all(12),
                 itemCount: visible.length,
                 itemBuilder: (context, index) {
@@ -3582,7 +3680,12 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
                   final isStarred = _starredIds.contains(item.id);
                   final role = widget.facilityRoleByHospitalId[item.hospitalId];
                   return Card(
+                    elevation: 0,
                     color: const Color(0xFFFFF7ED),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      side: const BorderSide(color: Color(0xFFFDDCC2)),
+                    ),
                     child: ListTile(
                       onTap: () => setState(() => _seenIds.add(item.id)),
                       leading: const Icon(Icons.notifications_active_outlined),
