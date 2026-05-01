@@ -241,6 +241,7 @@ class HospitalInfo {
 class PatientNotification {
   PatientNotification({
     required this.id,
+    required this.hospitalId,
     required this.title,
     required this.message,
     required this.type,
@@ -248,6 +249,7 @@ class PatientNotification {
   });
 
   final String id;
+  final String hospitalId;
   final String title;
   final String message;
   final String type;
@@ -256,6 +258,7 @@ class PatientNotification {
   factory PatientNotification.fromJson(Map<String, dynamic> json) {
     return PatientNotification(
       id: json['id']?.toString() ?? '',
+      hospitalId: json['hospitalId']?.toString() ?? '',
       title: json['title']?.toString() ?? 'Notification',
       message: json['message']?.toString() ?? '',
       type: json['type']?.toString() ?? 'info',
@@ -284,6 +287,7 @@ class AppointmentRecord {
     required this.patientId,
     required this.patientName,
     required this.type,
+    required this.facilityType,
     required this.status,
     required this.priority,
     required this.createdAt,
@@ -300,6 +304,7 @@ class AppointmentRecord {
   final String patientId;
   final String patientName;
   final String type;
+  final String facilityType;
   final String status;
   final String priority;
   final String createdAt;
@@ -307,6 +312,9 @@ class AppointmentRecord {
   final String? assignedTime;
   final int? queuePosition;
   final String? updatedAt;
+
+  FacilityRole get facilityRole => facilityRoleFromString(facilityType);
+  bool get isClinic => facilityRole == FacilityRole.clinic;
 
   factory AppointmentRecord.fromBookingJson(Map<String, dynamic> json) {
     final id =
@@ -320,6 +328,9 @@ class AppointmentRecord {
       patientId: json['patientId']?.toString() ?? '',
       patientName: json['patientName']?.toString() ?? 'Unknown Patient',
       type: (json['type']?.toString() ?? 'Appointment').trim(),
+      facilityType: facilityRoleFromString(
+        json['facilityType']?.toString(),
+      ).name,
       status: _normalizeStatus(json['status']?.toString() ?? 'pending'),
       priority: (json['priority']?.toString() ?? 'normal').trim(),
       createdAt:
@@ -344,6 +355,9 @@ class AppointmentRecord {
       patientId: json['patientId']?.toString() ?? '',
       patientName: json['patientName']?.toString() ?? 'Unknown Patient',
       type: json['type']?.toString() ?? 'Appointment',
+      facilityType: facilityRoleFromString(
+        json['facilityType']?.toString(),
+      ).name,
       status: _normalizeStatus(json['status']?.toString() ?? 'pending'),
       priority: json['priority']?.toString() ?? 'normal',
       createdAt:
@@ -365,6 +379,7 @@ class AppointmentRecord {
     'patientId': patientId,
     'patientName': patientName,
     'type': type,
+    'facilityType': facilityType,
     'status': status,
     'priority': priority,
     'createdAt': createdAt,
@@ -375,6 +390,7 @@ class AppointmentRecord {
   };
 
   AppointmentRecord copyWith({
+    String? facilityType,
     String? status,
     String? assignedDoctor,
     String? assignedTime,
@@ -389,6 +405,7 @@ class AppointmentRecord {
       patientId: patientId,
       patientName: patientName,
       type: type,
+      facilityType: facilityType ?? this.facilityType,
       status: status ?? this.status,
       priority: priority,
       createdAt: createdAt,
@@ -1248,6 +1265,8 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
   Timer? _appointmentPollTimer;
   io.Socket? _socket;
   DateTime? _lastSync;
+  Set<String> _seenNotificationIds = <String>{};
+  Set<String> _starredNotificationIds = <String>{};
 
   @override
   void initState() {
@@ -1273,6 +1292,7 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
     final id = await BackendConfig.getOrCreatePatientId();
     if (!mounted) return;
     setState(() => _patientUniqueId = id);
+    await _loadNotificationState();
     await _loadNotifications();
     await _loadAppointments();
   }
@@ -1338,6 +1358,71 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
     });
   }
 
+  String _seenNotificationsPrefsKey() =>
+      'qless_seen_notifications_${_patientUniqueId.trim()}';
+
+  String _starredNotificationsPrefsKey() =>
+      'qless_starred_notifications_${_patientUniqueId.trim()}';
+
+  Future<void> _loadNotificationState() async {
+    if (_patientUniqueId.trim().isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    final seen =
+        prefs.getStringList(_seenNotificationsPrefsKey()) ?? const <String>[];
+    final starred =
+        prefs.getStringList(_starredNotificationsPrefsKey()) ??
+        const <String>[];
+    if (!mounted) return;
+    setState(() {
+      _seenNotificationIds = seen.toSet();
+      _starredNotificationIds = starred.toSet();
+    });
+  }
+
+  Future<void> _saveNotificationState() async {
+    if (_patientUniqueId.trim().isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+      _seenNotificationsPrefsKey(),
+      _seenNotificationIds.take(250).toList(),
+    );
+    await prefs.setStringList(
+      _starredNotificationsPrefsKey(),
+      _starredNotificationIds.take(250).toList(),
+    );
+  }
+
+  int get _visibleNotificationCount {
+    return _notifications
+        .where(
+          (item) =>
+              !_seenNotificationIds.contains(item.id) ||
+              _starredNotificationIds.contains(item.id),
+        )
+        .length;
+  }
+
+  Future<void> _openNotificationCenter() async {
+    final result = await Navigator.of(context).push<NotificationCenterResult>(
+      MaterialPageRoute(
+        builder: (_) => NotificationCenterScreen(
+          notifications: _notifications,
+          initialSeenIds: _seenNotificationIds,
+          initialStarredIds: _starredNotificationIds,
+          facilityRoleByHospitalId: {
+            for (final hospital in _hospitals) hospital.id: hospital.role,
+          },
+        ),
+      ),
+    );
+    if (result == null || !mounted) return;
+    setState(() {
+      _seenNotificationIds = result.seenIds;
+      _starredNotificationIds = result.starredIds;
+    });
+    await _saveNotificationState();
+  }
+
   Future<void> _loadAppointments() async {
     if (_patientUniqueId.trim().isEmpty) return;
     final appointments = await _api.getPatientAppointments(_patientUniqueId);
@@ -1365,11 +1450,12 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
       type: type,
     );
     if (!mounted) return;
+    final entityLabel = hospital.role.label;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
           ok
-              ? '$type pre-booked at ${hospital.name}'
+              ? '$type pre-booked at ${hospital.name} ($entityLabel)'
               : 'Could not place booking right now.',
         ),
       ),
@@ -1640,6 +1726,41 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
             icon: const Icon(Icons.smart_toy_outlined),
           ),
           IconButton(
+            tooltip: 'Notifications',
+            onPressed: _openNotificationCenter,
+            icon: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                const Icon(Icons.notifications_none_rounded),
+                if (_visibleNotificationCount > 0)
+                  Positioned(
+                    right: -4,
+                    top: -4,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 5,
+                        vertical: 1,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0D9488),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        _visibleNotificationCount > 99
+                            ? '99+'
+                            : _visibleNotificationCount.toString(),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          IconButton(
             onPressed: _loadHospitals,
             icon: const Icon(Icons.refresh),
           ),
@@ -1897,10 +2018,6 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
     return ListView(
       padding: const EdgeInsets.all(12),
       children: [
-        if (_notifications.isNotEmpty)
-          ..._notifications
-              .take(3)
-              .map((item) => NotificationTile(notification: item)),
         ..._appointments.map((appointment) {
           final canEdit = {
             'pending',
@@ -3223,10 +3340,14 @@ class AppointmentCard extends StatelessWidget {
                 ),
                 StatusBadge(status: appointment.status),
                 _TypeBadge(type: appointment.type),
+                _FacilityEntityBadge(facilityType: appointment.facilityType),
               ],
             ),
             const SizedBox(height: 8),
-            if (showHospitalName) Text('Facility: ${appointment.hospitalName}'),
+            if (showHospitalName)
+              Text(
+                'Facility: ${appointment.hospitalName} • ${appointment.facilityRole.label}',
+              ),
             Text('Patient: ${appointment.patientName}'),
             Text('Created: ${appointment.createdAt}'),
             if ((appointment.assignedDoctor ?? '').isNotEmpty)
@@ -3323,22 +3444,196 @@ class _TypeBadge extends StatelessWidget {
   }
 }
 
-class NotificationTile extends StatelessWidget {
-  const NotificationTile({super.key, required this.notification});
+class _FacilityEntityBadge extends StatelessWidget {
+  const _FacilityEntityBadge({required this.facilityType});
 
-  final PatientNotification notification;
+  final String facilityType;
 
   @override
   Widget build(BuildContext context) {
-    return Semantics(
-      label: 'Notification: ${notification.title}',
-      child: Card(
-        color: const Color(0xFFFFF7ED),
-        child: ListTile(
-          leading: const Icon(Icons.notifications_active_outlined),
-          title: Text(notification.title),
-          subtitle: Text(notification.message),
+    final role = facilityRoleFromString(facilityType);
+    final isClinic = role == FacilityRole.clinic;
+    final bg = isClinic ? const Color(0xFFE0F2FE) : const Color(0xFFCCFBF1);
+    final fg = isClinic ? const Color(0xFF1E40AF) : const Color(0xFF0D9488);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            isClinic ? Icons.medical_services : Icons.local_hospital,
+            size: 12,
+            color: fg,
+          ),
+          const SizedBox(width: 4),
+          Text(
+            isClinic ? 'CLINIC' : 'HOSPITAL',
+            style: TextStyle(
+              color: fg,
+              fontWeight: FontWeight.w700,
+              fontSize: 11,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class NotificationCenterResult {
+  NotificationCenterResult({required this.seenIds, required this.starredIds});
+
+  final Set<String> seenIds;
+  final Set<String> starredIds;
+}
+
+class NotificationCenterScreen extends StatefulWidget {
+  const NotificationCenterScreen({
+    super.key,
+    required this.notifications,
+    required this.initialSeenIds,
+    required this.initialStarredIds,
+    required this.facilityRoleByHospitalId,
+  });
+
+  final List<PatientNotification> notifications;
+  final Set<String> initialSeenIds;
+  final Set<String> initialStarredIds;
+  final Map<String, FacilityRole> facilityRoleByHospitalId;
+
+  @override
+  State<NotificationCenterScreen> createState() =>
+      _NotificationCenterScreenState();
+}
+
+class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
+  late Set<String> _seenIds;
+  late Set<String> _starredIds;
+
+  @override
+  void initState() {
+    super.initState();
+    _seenIds = {...widget.initialSeenIds};
+    _starredIds = {...widget.initialStarredIds};
+  }
+
+  List<PatientNotification> get _visibleNotifications {
+    return widget.notifications.where((notification) {
+      return !_seenIds.contains(notification.id) ||
+          _starredIds.contains(notification.id);
+    }).toList();
+  }
+
+  NotificationCenterResult _buildResult() {
+    final autoSeen = _visibleNotifications
+        .where((item) => !_starredIds.contains(item.id))
+        .map((item) => item.id);
+    return NotificationCenterResult(
+      seenIds: {..._seenIds, ...autoSeen},
+      starredIds: {..._starredIds},
+    );
+  }
+
+  void _closeWithResult() {
+    Navigator.of(context).pop(_buildResult());
+  }
+
+  void _toggleStar(String id) {
+    setState(() {
+      if (_starredIds.contains(id)) {
+        _starredIds.remove(id);
+      } else {
+        _starredIds.add(id);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final visible = _visibleNotifications;
+
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        _closeWithResult();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          leading: IconButton(
+            onPressed: _closeWithResult,
+            icon: const Icon(Icons.arrow_back),
+          ),
+          title: const Text('Notifications'),
         ),
+        body: visible.isEmpty
+            ? const Center(
+                child: Text('No unseen notifications. Starred ones stay here.'),
+              )
+            : ListView.builder(
+                padding: const EdgeInsets.all(12),
+                itemCount: visible.length,
+                itemBuilder: (context, index) {
+                  final item = visible[index];
+                  final isStarred = _starredIds.contains(item.id);
+                  final role = widget.facilityRoleByHospitalId[item.hospitalId];
+                  return Card(
+                    color: const Color(0xFFFFF7ED),
+                    child: ListTile(
+                      onTap: () => setState(() => _seenIds.add(item.id)),
+                      leading: const Icon(Icons.notifications_active_outlined),
+                      title: Text(item.title),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const SizedBox(height: 2),
+                          Text(item.message),
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              if (role != null)
+                                _FacilityEntityBadge(facilityType: role.name),
+                              if (item.createdAt.trim().isNotEmpty)
+                                Text(
+                                  item.createdAt,
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                            ],
+                          ),
+                        ],
+                      ),
+                      trailing: IconButton(
+                        tooltip: isStarred
+                            ? 'Unstar notification'
+                            : 'Star notification',
+                        onPressed: () => _toggleStar(item.id),
+                        style: IconButton.styleFrom(
+                          backgroundColor: isStarred
+                              ? const Color(0xFFCCFBF1)
+                              : const Color(0xFF94A3B8),
+                          padding: EdgeInsets.zero,
+                          minimumSize: const Size(34, 34),
+                        ),
+                        icon: Icon(
+                          isStarred
+                              ? Icons.star_rounded
+                              : Icons.star_outline_rounded,
+                          color: isStarred
+                              ? const Color(0xFF0D9488)
+                              : Colors.white,
+                          size: 19,
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
       ),
     );
   }

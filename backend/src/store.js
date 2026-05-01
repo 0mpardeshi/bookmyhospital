@@ -191,6 +191,7 @@ function ensureSchemas() {
       patientName: { type: String, required: true },
       patientEmail: { type: String, default: null },
       type: { type: String, required: true },
+      facilityType: { type: String, enum: ['hospital', 'clinic'], default: 'hospital' },
       priority: { type: String, default: 'normal' },
       status: { type: String, default: 'confirmed' },
       assignedDoctor: { type: String, default: null },

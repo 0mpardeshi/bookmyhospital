@@ -597,6 +597,7 @@ app.post('/api/bookings', async (req, res) => {
   const booking = await createBooking({
     hospitalId: hospital.id || hospital.hospitalId,
     hospitalName: hospital.name,
+    facilityType: hospital.facilityType || 'hospital',
     patientId,
     patientName,
     patientEmail,
