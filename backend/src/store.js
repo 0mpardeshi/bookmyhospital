@@ -11,6 +11,13 @@ function getMongoUri() {
 const useMongo = Boolean(getMongoUri());
 const dbName = process.env.MONGODB_DB_NAME || 'bookmyhospital';
 
+const FACILITY_TYPES = new Set(['hospital', 'clinic']);
+
+function normalizeFacilityType(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return FACILITY_TYPES.has(normalized) ? normalized : 'hospital';
+}
+
 const memory = {
   users: [
     {
@@ -36,6 +43,7 @@ const memory = {
       ownerEmail: 'citycare@bmh.in',
       name: 'CityCare Multispeciality Hospital',
       email: 'citycare@bmh.in',
+      facilityType: 'hospital',
       status: 'approved',
       location: 'Pune',
       specialities: ['Cardiology', 'Trauma', 'Critical Care'],
@@ -61,6 +69,7 @@ const memory = {
       ownerEmail: 'sunrise@bmh.in',
       name: 'Sunrise Emergency & Trauma',
       email: 'sunrise@bmh.in',
+      facilityType: 'hospital',
       status: 'approved',
       location: 'Mumbai',
       specialities: ['Emergency', 'Orthopedics'],
@@ -86,6 +95,7 @@ const memory = {
       ownerEmail: 'greenvalley@bmh.in',
       name: 'Green Valley Women & Child Hospital',
       email: 'greenvalley@bmh.in',
+      facilityType: 'hospital',
       status: 'approved',
       location: 'Nashik',
       specialities: ['Pediatrics', 'Gynecology'],
@@ -150,6 +160,7 @@ function ensureSchemas() {
       ownerEmail: { type: String, index: true },
       name: { type: String, required: true },
       email: { type: String, required: true, unique: true, index: true },
+      facilityType: { type: String, enum: ['hospital', 'clinic'], default: 'hospital' },
       status: { type: String, enum: ['pending', 'approved', 'deactivated', 'banned'], default: 'pending' },
       location: { type: String, required: true, index: true },
       specialities: { type: [String], default: [] },
@@ -338,8 +349,12 @@ async function findHospitalByEmail(email) {
 async function createPendingHospital(payload) {
   if (useMongo) {
     ensureSchemas();
+    const existing = await schemas.Hospital.findOne({ email: payload.email });
+    if (existing) return null;
+    const facilityType = normalizeFacilityType(payload.facilityType);
     const hospital = await schemas.Hospital.create({
       ...payload,
+      facilityType,
       status: 'pending',
       docsSubmitted: true,
       avgReview: Number(payload.avgReview || 0),
@@ -349,9 +364,16 @@ async function createPendingHospital(payload) {
     return normalize(hospital, 'hospital');
   }
 
+  const existing = memory.hospitals.find(
+    (h) => h.email.toLowerCase() === String(payload.email).toLowerCase(),
+  );
+  if (existing) return null;
+  const facilityType = normalizeFacilityType(payload.facilityType);
+
   const hospital = {
     id: `pending_${Date.now()}`,
     ...payload,
+    facilityType,
     status: 'pending',
     docsSubmitted: true,
     avgReview: Number(payload.avgReview || 0),

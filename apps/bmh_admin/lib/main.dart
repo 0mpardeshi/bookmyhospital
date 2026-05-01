@@ -71,18 +71,24 @@ class PendingHospital {
     required this.name,
     required this.email,
     required this.location,
+    required this.facilityType,
   });
 
   final String id;
   final String name;
   final String email;
   final String location;
+  final String facilityType;
+
+  bool get isClinic => facilityType == 'clinic';
+  String get facilityLabel => isClinic ? 'Clinic' : 'Hospital';
 
   factory PendingHospital.fromJson(Map<String, dynamic> map) => PendingHospital(
     id: map['id']?.toString() ?? '',
     name: map['name']?.toString() ?? '',
     email: map['email']?.toString() ?? '',
     location: map['location']?.toString() ?? '',
+    facilityType: map['facilityType']?.toString() ?? 'hospital',
   );
 }
 
@@ -133,6 +139,7 @@ class HospitalAccount {
     required this.status,
     required this.avgReview,
     required this.ratingsCount,
+    required this.facilityType,
   });
 
   final String id;
@@ -142,6 +149,10 @@ class HospitalAccount {
   final String status;
   final double avgReview;
   final int ratingsCount;
+  final String facilityType;
+
+  bool get isClinic => facilityType == 'clinic';
+  String get facilityLabel => isClinic ? 'Clinic' : 'Hospital';
 
   factory HospitalAccount.fromJson(Map<String, dynamic> map) => HospitalAccount(
     id: map['id']?.toString() ?? '',
@@ -151,6 +162,7 @@ class HospitalAccount {
     status: map['status']?.toString() ?? 'unknown',
     avgReview: ((map['avgReview'] ?? 0) as num).toDouble(),
     ratingsCount: (map['ratingsCount'] ?? 0) as int,
+    facilityType: map['facilityType']?.toString() ?? 'hospital',
   );
 }
 
@@ -355,7 +367,10 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   List<HospitalAccount> _deactivatedHospitals = [];
   List<HospitalAccount> _approvedHospitals = [];
   Map<String, dynamic> _usersByLocation = {};
-  int _approvedCount = 0;
+  int _approvedHospitalCount = 0;
+  int _approvedClinicCount = 0;
+  int _pendingHospitalCount = 0;
+  int _pendingClinicCount = 0;
   int _bookingCount = 0;
   io.Socket? _socket;
 
@@ -454,6 +469,15 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               .toList()
             ..sort((a, b) => b.avgReview.compareTo(a.avgReview));
 
+      final approvedHospitalCount = approvedHospitals
+          .where((h) => !h.isClinic)
+          .length;
+      final approvedClinicCount = approvedHospitals
+          .where((h) => h.isClinic)
+          .length;
+      final pendingHospitalCount = pending.where((h) => !h.isClinic).length;
+      final pendingClinicCount = pending.where((h) => h.isClinic).length;
+
       final deactivatedIds = deactivatedHospitals.map((h) => h.id).toSet();
       final complaints = (overview['complaints'] as List<dynamic>? ?? [])
           .map((e) => Complaint.fromJson(e as Map<String, dynamic>))
@@ -479,7 +503,10 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         _approvedHospitals = approvedHospitals;
         _usersByLocation =
             overview['usersByLocation'] as Map<String, dynamic>? ?? {};
-        _approvedCount = (overview['hospitalsApproved'] ?? 0) as int;
+        _approvedHospitalCount = approvedHospitalCount;
+        _approvedClinicCount = approvedClinicCount;
+        _pendingHospitalCount = pendingHospitalCount;
+        _pendingClinicCount = pendingClinicCount;
         _bookingCount = (overview['bookings'] as List<dynamic>? ?? []).length;
         _loading = false;
       });
@@ -513,6 +540,15 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                   .toList()
                 ..sort((a, b) => b.avgReview.compareTo(a.avgReview));
 
+          final approvedHospitalCount = approvedHospitals
+              .where((h) => !h.isClinic)
+              .length;
+          final approvedClinicCount = approvedHospitals
+              .where((h) => h.isClinic)
+              .length;
+          final pendingHospitalCount = pending.where((h) => !h.isClinic).length;
+          final pendingClinicCount = pending.where((h) => h.isClinic).length;
+
           final deactivatedIds = deactivatedHospitals.map((h) => h.id).toSet();
           final complaints = (overview['complaints'] as List<dynamic>? ?? [])
               .map((e) => Complaint.fromJson(e as Map<String, dynamic>))
@@ -527,7 +563,10 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             _approvedHospitals = approvedHospitals;
             _usersByLocation =
                 overview['usersByLocation'] as Map<String, dynamic>? ?? {};
-            _approvedCount = (overview['hospitalsApproved'] ?? 0) as int;
+            _approvedHospitalCount = approvedHospitalCount;
+            _approvedClinicCount = approvedClinicCount;
+            _pendingHospitalCount = pendingHospitalCount;
+            _pendingClinicCount = pendingClinicCount;
             _bookingCount =
                 (overview['bookings'] as List<dynamic>? ?? []).length;
             _loading = false;
@@ -696,7 +735,24 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                   spacing: 10,
                   runSpacing: 10,
                   children: [
-                    _kpi('Approved Hospitals', _approvedCount.toString()),
+                    _kpi(
+                      'Hospitals',
+                      (_approvedHospitalCount +
+                              _pendingHospitalCount +
+                              _deactivatedHospitals
+                                  .where((h) => !h.isClinic)
+                                  .length)
+                          .toString(),
+                    ),
+                    _kpi(
+                      'Clinics',
+                      (_approvedClinicCount +
+                              _pendingClinicCount +
+                              _deactivatedHospitals
+                                  .where((h) => h.isClinic)
+                                  .length)
+                          .toString(),
+                    ),
                     _kpi('Pending Approvals', _pending.length.toString()),
                     _kpi('Bookings', _bookingCount.toString()),
                     _kpi('Complaints', _complaints.length.toString()),
@@ -704,7 +760,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  'Hospital Approval Queue',
+                  'Facility Approval Queue',
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
                 const SizedBox(height: 8),
@@ -712,7 +768,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                   (h) => Card(
                     child: ListTile(
                       title: Text(h.name),
-                      subtitle: Text('${h.location} • ${h.email}'),
+                      subtitle: Text(
+                        '${h.facilityLabel} • ${h.location} • ${h.email}',
+                      ),
                       trailing: Wrap(
                         spacing: 6,
                         children: [
@@ -774,7 +832,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                   ),
                 const SizedBox(height: 12),
                 Text(
-                  'Hospital Ratings',
+                  'Facility Ratings',
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
                 const SizedBox(height: 8),

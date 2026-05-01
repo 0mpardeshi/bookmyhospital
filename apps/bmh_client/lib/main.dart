@@ -83,10 +83,96 @@ class BookMyHospitalApp extends StatelessWidget {
     );
 
     return MaterialApp(
-      title: 'BookMyHospital',
+      title: 'Q-Less',
       debugShowCheckedModeBanner: false,
       theme: base.copyWith(scaffoldBackgroundColor: const Color(0xFFF0FDFA)),
       home: const EntryScreen(),
+    );
+  }
+}
+
+const List<String> kEntryTaglines = [
+  'Hospitals at your fingertips — fast, calm, and reliable in emergencies.',
+  'Local OPD clinics with real-time queue visibility.',
+  'Skip the crowd with smart OPD queue timing.',
+  'Check wait times before you leave home.',
+  'Book consultations in minutes, not hours.',
+  'Emergency flow that keeps families informed.',
+  'Simple for patients, efficient for staff.',
+  'Q-Less keeps OPDs moving smoothly.',
+];
+
+class RotatingTaglines extends StatefulWidget {
+  const RotatingTaglines({
+    super.key,
+    required this.lines,
+    this.interval = const Duration(seconds: 7),
+    this.transition = const Duration(milliseconds: 600),
+  });
+
+  final List<String> lines;
+  final Duration interval;
+  final Duration transition;
+
+  @override
+  State<RotatingTaglines> createState() => _RotatingTaglinesState();
+}
+
+class _RotatingTaglinesState extends State<RotatingTaglines>
+    with SingleTickerProviderStateMixin {
+  int _index = 0;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.lines.length > 1) {
+      _timer = Timer.periodic(widget.interval, (_) {
+        if (!mounted) return;
+        setState(() => _index = (_index + 1) % widget.lines.length);
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final textStyle = Theme.of(context).textTheme.bodyMedium;
+
+    return AnimatedSize(
+      duration: widget.transition,
+      curve: Curves.easeInOut,
+      child: AnimatedSwitcher(
+        duration: widget.transition,
+        switchInCurve: Curves.easeInOut,
+        switchOutCurve: Curves.easeInOut,
+        transitionBuilder: (child, animation) {
+          final curved = CurvedAnimation(
+            parent: animation,
+            curve: Curves.easeInOut,
+          );
+          return FadeTransition(
+            opacity: curved,
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: const Offset(0, 0.12),
+                end: Offset.zero,
+              ).animate(curved),
+              child: child,
+            ),
+          );
+        },
+        child: Text(
+          widget.lines[_index],
+          key: ValueKey(_index),
+          style: textStyle,
+        ),
+      ),
     );
   }
 }
@@ -107,6 +193,7 @@ class HospitalInfo {
     required this.ratingsCount,
     required this.specialities,
     required this.status,
+    required this.facilityType,
   });
 
   final String id;
@@ -123,6 +210,9 @@ class HospitalInfo {
   final int ratingsCount;
   final List<String> specialities;
   final String status;
+  final String facilityType;
+
+  FacilityRole get role => facilityRoleFromString(facilityType);
 
   factory HospitalInfo.fromJson(Map<String, dynamic> json) {
     return HospitalInfo(
@@ -142,6 +232,7 @@ class HospitalInfo {
           .map((item) => item.toString())
           .toList(),
       status: json['status']?.toString() ?? 'approved',
+      facilityType: json['facilityType']?.toString() ?? 'hospital',
     );
   }
 }
@@ -178,6 +269,11 @@ extension FacilityRoleX on FacilityRole {
   String get label => this == FacilityRole.hospital ? 'Hospital' : 'Clinic';
 }
 
+FacilityRole facilityRoleFromString(String? value) {
+  final normalized = (value ?? '').toLowerCase().trim();
+  return normalized == 'clinic' ? FacilityRole.clinic : FacilityRole.hospital;
+}
+
 class AppointmentRecord {
   AppointmentRecord({
     required this.id,
@@ -212,7 +308,9 @@ class AppointmentRecord {
   final String? updatedAt;
 
   factory AppointmentRecord.fromBookingJson(Map<String, dynamic> json) {
-    final id = json['id']?.toString() ?? 'booking_${DateTime.now().millisecondsSinceEpoch}';
+    final id =
+        json['id']?.toString() ??
+        'booking_${DateTime.now().millisecondsSinceEpoch}';
     return AppointmentRecord(
       id: id,
       displayId: _toDisplayId(id),
@@ -223,7 +321,8 @@ class AppointmentRecord {
       type: (json['type']?.toString() ?? 'Appointment').trim(),
       status: _normalizeStatus(json['status']?.toString() ?? 'pending'),
       priority: (json['priority']?.toString() ?? 'normal').trim(),
-      createdAt: json['createdAt']?.toString() ?? DateTime.now().toIso8601String(),
+      createdAt:
+          json['createdAt']?.toString() ?? DateTime.now().toIso8601String(),
       assignedDoctor: json['assignedDoctor']?.toString(),
       assignedTime: json['assignedTime']?.toString(),
       queuePosition: json['queuePosition'] is int
@@ -236,7 +335,9 @@ class AppointmentRecord {
   factory AppointmentRecord.fromJson(Map<String, dynamic> json) {
     return AppointmentRecord(
       id: json['id']?.toString() ?? '',
-      displayId: json['displayId']?.toString() ?? _toDisplayId(json['id']?.toString() ?? ''),
+      displayId:
+          json['displayId']?.toString() ??
+          _toDisplayId(json['id']?.toString() ?? ''),
       hospitalId: json['hospitalId']?.toString() ?? '',
       hospitalName: json['hospitalName']?.toString() ?? 'Unknown Facility',
       patientId: json['patientId']?.toString() ?? '',
@@ -244,7 +345,8 @@ class AppointmentRecord {
       type: json['type']?.toString() ?? 'Appointment',
       status: _normalizeStatus(json['status']?.toString() ?? 'pending'),
       priority: json['priority']?.toString() ?? 'normal',
-      createdAt: json['createdAt']?.toString() ?? DateTime.now().toIso8601String(),
+      createdAt:
+          json['createdAt']?.toString() ?? DateTime.now().toIso8601String(),
       assignedDoctor: json['assignedDoctor']?.toString(),
       assignedTime: json['assignedTime']?.toString(),
       queuePosition: json['queuePosition'] is int
@@ -299,7 +401,9 @@ class AppointmentRecord {
   static String _toDisplayId(String raw) {
     final compact = raw.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '').toUpperCase();
     if (compact.isEmpty) return 'APT_UNKNOWN';
-    final suffix = compact.length <= 8 ? compact : compact.substring(compact.length - 8);
+    final suffix = compact.length <= 8
+        ? compact
+        : compact.substring(compact.length - 8);
     return 'APT_$suffix';
   }
 
@@ -359,10 +463,14 @@ class ApiService {
       'bookmyhospital_cached_notifications_$patientId';
   static String _patientAppointmentsCacheKey(String patientId) =>
       'bookmyhospital_cached_patient_appointments_$patientId';
-  static String _facilityAppointmentsCacheKey(String facilityId, FacilityRole role) =>
-      'bookmyhospital_cached_${role.name}_appointments_$facilityId';
-  static String _facilityAppointmentActionsKey(String facilityId, FacilityRole role) =>
-      'bookmyhospital_cached_${role.name}_appointment_actions_$facilityId';
+  static String _facilityAppointmentsCacheKey(
+    String facilityId,
+    FacilityRole role,
+  ) => 'bookmyhospital_cached_${role.name}_appointments_$facilityId';
+  static String _facilityAppointmentActionsKey(
+    String facilityId,
+    FacilityRole role,
+  ) => 'bookmyhospital_cached_${role.name}_appointment_actions_$facilityId';
 
   Future<void> _cacheJson(String key, dynamic value) async {
     final prefs = await SharedPreferences.getInstance();
@@ -562,7 +670,9 @@ class ApiService {
     }
   }
 
-  Future<List<AppointmentRecord>> getPatientAppointments(String patientId) async {
+  Future<List<AppointmentRecord>> getPatientAppointments(
+    String patientId,
+  ) async {
     try {
       final uri = Uri.parse(
         '${BackendConfig.baseUrl}/api/patients/$patientId/bookings',
@@ -572,14 +682,18 @@ class ApiService {
         return _readPatientAppointmentsCache(patientId);
       }
       final map = jsonDecode(response.body) as Map<String, dynamic>;
-      final appointments = (map['bookings'] as List<dynamic>? ?? [])
-          .map((item) => AppointmentRecord.fromBookingJson(item as Map<String, dynamic>))
-          .toList()
-        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-      await _cacheHiveJson(
-        _patientAppointmentsCacheKey(patientId),
-        {'appointments': appointments.map((item) => item.toJson()).toList()},
-      );
+      final appointments =
+          (map['bookings'] as List<dynamic>? ?? [])
+              .map(
+                (item) => AppointmentRecord.fromBookingJson(
+                  item as Map<String, dynamic>,
+                ),
+              )
+              .toList()
+            ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      await _cacheHiveJson(_patientAppointmentsCacheKey(patientId), {
+        'appointments': appointments.map((item) => item.toJson()).toList(),
+      });
       return appointments;
     } catch (_) {
       return _readPatientAppointmentsCache(patientId);
@@ -591,20 +705,26 @@ class ApiService {
     required FacilityRole role,
   }) async {
     try {
-      final uri = Uri.parse('${BackendConfig.baseUrl}/api/hospitals/$facilityId/bookings');
+      final uri = Uri.parse(
+        '${BackendConfig.baseUrl}/api/hospitals/$facilityId/bookings',
+      );
       final response = await http.get(uri).timeout(const Duration(seconds: 10));
       if (response.statusCode != 200) {
         return _readFacilityAppointmentsCache(facilityId, role);
       }
       final map = jsonDecode(response.body) as Map<String, dynamic>;
-      final appointments = (map['bookings'] as List<dynamic>? ?? [])
-          .map((item) => AppointmentRecord.fromBookingJson(item as Map<String, dynamic>))
-          .toList()
-        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-      await _cacheHiveJson(
-        _facilityAppointmentsCacheKey(facilityId, role),
-        {'appointments': appointments.map((item) => item.toJson()).toList()},
-      );
+      final appointments =
+          (map['bookings'] as List<dynamic>? ?? [])
+              .map(
+                (item) => AppointmentRecord.fromBookingJson(
+                  item as Map<String, dynamic>,
+                ),
+              )
+              .toList()
+            ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      await _cacheHiveJson(_facilityAppointmentsCacheKey(facilityId, role), {
+        'appointments': appointments.map((item) => item.toJson()).toList(),
+      });
       return appointments;
     } catch (_) {
       return _readFacilityAppointmentsCache(facilityId, role);
@@ -625,7 +745,9 @@ class ApiService {
       if (assignedTime != null) payload['assignedTime'] = assignedTime;
       if (queuePosition != null) payload['queuePosition'] = queuePosition;
       if (payload.isEmpty) return null;
-      final uri = Uri.parse('${BackendConfig.baseUrl}/api/bookings/$appointmentId');
+      final uri = Uri.parse(
+        '${BackendConfig.baseUrl}/api/bookings/$appointmentId',
+      );
       final response = await http
           .patch(
             uri,
@@ -653,7 +775,10 @@ class ApiService {
           .post(
             uri,
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'bookingId': bookingId, 'hospitalId': facilityId}),
+            body: jsonEncode({
+              'bookingId': bookingId,
+              'hospitalId': facilityId,
+            }),
           )
           .timeout(const Duration(seconds: 10));
       if (response.statusCode != 200) return null;
@@ -685,7 +810,8 @@ class ApiService {
       final map = jsonDecode(response.body) as Map<String, dynamic>;
       return HqrVerifyResult(
         verified: map['verified'] == true,
-        reason: map['message']?.toString() ??
+        reason:
+            map['message']?.toString() ??
             map['reason']?.toString() ??
             map['error']?.toString() ??
             (response.statusCode == 200 ? 'Verified' : 'Verification failed'),
@@ -710,7 +836,9 @@ class ApiService {
     final result = <String, AppointmentRecord>{};
     for (final entry in actions.entries) {
       if (entry.value is Map<String, dynamic>) {
-        result[entry.key] = AppointmentRecord.fromJson(entry.value as Map<String, dynamic>);
+        result[entry.key] = AppointmentRecord.fromJson(
+          entry.value as Map<String, dynamic>,
+        );
       }
     }
     return result;
@@ -726,13 +854,14 @@ class ApiService {
       role: role,
     );
     current[appointment.id] = appointment;
-    await _cacheHiveJson(
-      _facilityAppointmentActionsKey(facilityId, role),
-      {'actions': current.map((key, value) => MapEntry(key, value.toJson()))},
-    );
+    await _cacheHiveJson(_facilityAppointmentActionsKey(facilityId, role), {
+      'actions': current.map((key, value) => MapEntry(key, value.toJson())),
+    });
   }
 
-  Future<List<AppointmentRecord>> _readPatientAppointmentsCache(String patientId) async {
+  Future<List<AppointmentRecord>> _readPatientAppointmentsCache(
+    String patientId,
+  ) async {
     final cached = await _readHiveMap(_patientAppointmentsCacheKey(patientId));
     return (cached?['appointments'] as List<dynamic>? ?? [])
         .map((item) => AppointmentRecord.fromJson(item as Map<String, dynamic>))
@@ -820,6 +949,7 @@ final List<HospitalInfo> _fallbackHospitals = [
     ratingsCount: 132,
     specialities: ['Cardiology', 'Trauma', 'Critical Care'],
     status: 'approved',
+    facilityType: 'hospital',
   ),
   HospitalInfo(
     id: 'hosp_2',
@@ -836,6 +966,7 @@ final List<HospitalInfo> _fallbackHospitals = [
     ratingsCount: 91,
     specialities: ['Emergency', 'Orthopedics'],
     status: 'approved',
+    facilityType: 'hospital',
   ),
   HospitalInfo(
     id: 'hosp_3',
@@ -852,6 +983,7 @@ final List<HospitalInfo> _fallbackHospitals = [
     ratingsCount: 76,
     specialities: ['Pediatrics', 'Gynecology'],
     status: 'approved',
+    facilityType: 'hospital',
   ),
 ];
 
@@ -911,7 +1043,7 @@ class EntryScreen extends StatelessWidget {
               children: [
                 const SizedBox(height: 24),
                 Text(
-                  'BookMyHospital',
+                  'Q-Less',
                   style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                     fontWeight: FontWeight.w700,
                     color: const Color(0xFF134E4A),
@@ -923,9 +1055,7 @@ class EntryScreen extends StatelessWidget {
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
                 const SizedBox(height: 8),
-                const Text(
-                  'Hospitals at your fingertips — fast, calm, and reliable in emergencies.',
-                ),
+                const RotatingTaglines(lines: kEntryTaglines),
                 const SizedBox(height: 12),
                 OutlinedButton.icon(
                   onPressed: () => _setBackendUrl(context),
@@ -948,7 +1078,7 @@ class EntryScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 12),
                 _RoleCard(
-                  title: 'Join as Hospital',
+                  title: 'Join as Hospitals or Clinics',
                   subtitle:
                       'Submit registration docs, wait for admin approval, then manage live availability.',
                   icon: Icons.local_hospital,
@@ -1307,8 +1437,7 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
       _appointments = _appointments.map((item) {
         if (item.id != appointment.id) return item;
         return next;
-      }).toList()
-        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      }).toList()..sort((a, b) => b.createdAt.compareTo(a.createdAt));
     });
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -1669,11 +1798,16 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
       padding: const EdgeInsets.all(12),
       children: [
         if (_notifications.isNotEmpty)
-          ..._notifications.take(3).map((item) => NotificationTile(notification: item)),
+          ..._notifications
+              .take(3)
+              .map((item) => NotificationTile(notification: item)),
         ..._appointments.map((appointment) {
-          final canEdit = {'pending', 'accepted', 'assigned', 'queued'}.contains(
-            appointment.status,
-          );
+          final canEdit = {
+            'pending',
+            'accepted',
+            'assigned',
+            'queued',
+          }.contains(appointment.status);
           return AppointmentCard(
             appointment: appointment,
             highlighted: _highlightedAppointmentId == appointment.id,
@@ -1682,9 +1816,12 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
                 ? [
                     AppointmentCardAction(
                       label: 'Cancel',
-                      semanticLabel: 'Cancel appointment ${appointment.displayId}',
-                      onPressed: () =>
-                          _updatePatientAppointmentStatus(appointment, 'canceled'),
+                      semanticLabel:
+                          'Cancel appointment ${appointment.displayId}',
+                      onPressed: () => _updatePatientAppointmentStatus(
+                        appointment,
+                        'canceled',
+                      ),
                     ),
                     AppointmentCardAction(
                       label: 'Reschedule',
@@ -1718,7 +1855,9 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
           child: ListTile(
             leading: const Icon(Icons.badge_outlined),
             title: const Text('Patient Unique ID'),
-            subtitle: Text(_patientUniqueId.isEmpty ? 'creating...' : _patientUniqueId),
+            subtitle: Text(
+              _patientUniqueId.isEmpty ? 'creating...' : _patientUniqueId,
+            ),
           ),
         ),
         Card(
@@ -1911,6 +2050,7 @@ class _HospitalRegistrationScreenState
   final _docs = TextEditingController(
     text: 'https://drive.google.com/your-hospital-docs-folder',
   );
+  FacilityRole _selectedRole = FacilityRole.hospital;
   bool _submitting = false;
 
   Future<void> _submit() async {
@@ -1921,6 +2061,7 @@ class _HospitalRegistrationScreenState
       'name': _name.text.trim(),
       'email': _email.text.trim(),
       'location': _location.text.trim(),
+      'facilityType': _selectedRole.name,
       'specialities': _speciality.text
           .split(',')
           .map((e) => e.trim())
@@ -1954,15 +2095,34 @@ class _HospitalRegistrationScreenState
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Hospital Registration')),
+      appBar: AppBar(title: const Text('Registration')),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Form(
           key: _formKey,
           child: Column(
             children: [
-              _field(_name, 'Hospital Name'),
-              _field(_email, 'Official Email'),
+              SegmentedButton<FacilityRole>(
+                segments: const [
+                  ButtonSegment<FacilityRole>(
+                    value: FacilityRole.hospital,
+                    label: Text('Hospital'),
+                    icon: Icon(Icons.local_hospital_outlined),
+                  ),
+                  ButtonSegment<FacilityRole>(
+                    value: FacilityRole.clinic,
+                    label: Text('Clinic'),
+                    icon: Icon(Icons.medical_information_outlined),
+                  ),
+                ],
+                selected: {_selectedRole},
+                onSelectionChanged: (selection) {
+                  setState(() => _selectedRole = selection.first);
+                },
+              ),
+              const SizedBox(height: 12),
+              _field(_name, '${_selectedRole.label} Name'),
+              _field(_email, 'Official ${_selectedRole.label} Email'),
               _field(_location, 'Location'),
               _field(_speciality, 'Specialities (comma separated)'),
               _field(_equipment, 'Equipment (comma separated)'),
@@ -1993,7 +2153,7 @@ class _HospitalRegistrationScreenState
                     ),
                   );
                 },
-                child: const Text('Hospital Login'),
+                child: const Text('Facility Login'),
               ),
             ],
           ),
@@ -2026,7 +2186,6 @@ class HospitalLoginScreen extends StatefulWidget {
 
 class _HospitalLoginScreenState extends State<HospitalLoginScreen> {
   final _email = TextEditingController();
-  FacilityRole _selectedRole = FacilityRole.hospital;
   bool _loading = false;
 
   @override
@@ -2046,18 +2205,17 @@ class _HospitalLoginScreenState extends State<HospitalLoginScreen> {
     if (hospital == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Hospital not found or not approved yet.'),
+          content: Text('Facility not found or not approved yet.'),
         ),
       );
       return;
     }
 
+    final role = hospital.role;
+
     Navigator.of(context).pushReplacement(
       MaterialPageRoute<void>(
-        builder: (_) => HospitalDashboardScreen(
-          hospital: hospital,
-          role: _selectedRole,
-        ),
+        builder: (_) => HospitalDashboardScreen(hospital: hospital, role: role),
       ),
     );
   }
@@ -2065,7 +2223,7 @@ class _HospitalLoginScreenState extends State<HospitalLoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Hospital Login')),
+      appBar: AppBar(title: const Text('Facility Login')),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -2073,37 +2231,14 @@ class _HospitalLoginScreenState extends State<HospitalLoginScreen> {
             TextField(
               controller: _email,
               decoration: const InputDecoration(
-                labelText: 'Approved hospital email',
+                labelText: 'Approved facility email',
                 border: OutlineInputBorder(),
               ),
             ),
             const SizedBox(height: 12),
-            SegmentedButton<FacilityRole>(
-              segments: const [
-                ButtonSegment<FacilityRole>(
-                  value: FacilityRole.hospital,
-                  label: Text('Hospital'),
-                  icon: Icon(Icons.local_hospital_outlined),
-                ),
-                ButtonSegment<FacilityRole>(
-                  value: FacilityRole.clinic,
-                  label: Text('Clinic'),
-                  icon: Icon(Icons.medical_information_outlined),
-                ),
-              ],
-              selected: {_selectedRole},
-              onSelectionChanged: (selection) {
-                setState(() => _selectedRole = selection.first);
-              },
-            ),
-            const SizedBox(height: 12),
             FilledButton(
               onPressed: _loading ? null : _login,
-              child: Text(
-                _loading
-                    ? 'Signing in...'
-                    : 'Open ${_selectedRole.label} Dashboard',
-              ),
+              child: Text(_loading ? 'Signing in...' : 'Open Dashboard'),
             ),
           ],
         ),
@@ -2298,8 +2433,9 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
         facilityId: facilityId,
         role: widget.role,
       );
-      final merged = remote.map((item) => localActions[item.id] ?? item).toList()
-        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      final merged =
+          remote.map((item) => localActions[item.id] ?? item).toList()
+            ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
       if (!mounted) return;
       setState(() => _appointments = merged);
     } catch (_) {}
@@ -2411,8 +2547,7 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
       _appointments = _appointments.map((item) {
         if (item.id != updated.id) return item;
         return updated;
-      }).toList()
-        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      }).toList()..sort((a, b) => b.createdAt.compareTo(a.createdAt));
     });
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -2666,9 +2801,9 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
               children: [
                 Text(
                   widget.hospital.name,
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 4),
                 Text('${widget.hospital.location} • ${widget.hospital.email}'),
@@ -2680,7 +2815,9 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
                     Chip(
                       label: Text(_accountStatus.toUpperCase()),
                       backgroundColor: approvalColor.withValues(alpha: 0.14),
-                      side: BorderSide(color: approvalColor.withValues(alpha: 0.35)),
+                      side: BorderSide(
+                        color: approvalColor.withValues(alpha: 0.35),
+                      ),
                     ),
                     Chip(
                       label: Text('Appointments ${_appointments.length}'),
@@ -2776,9 +2913,7 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
         const SizedBox(height: 12),
         if (filtered.isEmpty)
           const Card(
-            child: ListTile(
-              title: Text('No appointments for selected filter'),
-            ),
+            child: ListTile(title: Text('No appointments for selected filter')),
           )
         else
           ...filtered.map((appointment) {
@@ -2788,14 +2923,16 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
                 AppointmentCardAction(
                   label: 'Accept',
                   semanticLabel: 'Accept appointment ${appointment.displayId}',
-                  onPressed: () => _transitionAppointment(appointment, 'accepted'),
+                  onPressed: () =>
+                      _transitionAppointment(appointment, 'accepted'),
                 ),
               );
               actions.add(
                 AppointmentCardAction(
                   label: 'Decline',
                   semanticLabel: 'Decline appointment ${appointment.displayId}',
-                  onPressed: () => _transitionAppointment(appointment, 'declined'),
+                  onPressed: () =>
+                      _transitionAppointment(appointment, 'declined'),
                 ),
               );
             } else if (appointment.status == 'accepted' ||
@@ -2803,7 +2940,8 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
               actions.add(
                 AppointmentCardAction(
                   label: 'Assign',
-                  semanticLabel: 'Assign doctor and time for ${appointment.displayId}',
+                  semanticLabel:
+                      'Assign doctor and time for ${appointment.displayId}',
                   onPressed: () => _openAssignDialog(appointment),
                 ),
               );
@@ -2818,7 +2956,8 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
               actions.add(
                 AppointmentCardAction(
                   label: 'Queue',
-                  semanticLabel: 'Set queue position for ${appointment.displayId}',
+                  semanticLabel:
+                      'Set queue position for ${appointment.displayId}',
                   onPressed: () => _openQueueDialog(appointment),
                 ),
               );
@@ -2833,8 +2972,10 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
               actions.add(
                 AppointmentCardAction(
                   label: 'Complete',
-                  semanticLabel: 'Mark appointment ${appointment.displayId} complete',
-                  onPressed: () => _transitionAppointment(appointment, 'completed'),
+                  semanticLabel:
+                      'Mark appointment ${appointment.displayId} complete',
+                  onPressed: () =>
+                      _transitionAppointment(appointment, 'completed'),
                 ),
               );
               actions.add(
@@ -2976,9 +3117,9 @@ class AppointmentCard extends StatelessWidget {
               children: [
                 Text(
                   appointment.displayId,
-                  style: Theme.of(
-                    context,
-                  ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
                 StatusBadge(status: appointment.status),
                 _TypeBadge(type: appointment.type),
@@ -3120,7 +3261,8 @@ class AppointmentQrScannerScreen extends StatefulWidget {
       _AppointmentQrScannerScreenState();
 }
 
-class _AppointmentQrScannerScreenState extends State<AppointmentQrScannerScreen> {
+class _AppointmentQrScannerScreenState
+    extends State<AppointmentQrScannerScreen> {
   final MobileScannerController _scannerController = MobileScannerController(
     detectionSpeed: DetectionSpeed.noDuplicates,
   );
@@ -3177,7 +3319,8 @@ class _AppointmentQrScannerScreenState extends State<AppointmentQrScannerScreen>
     }
     if (appointment == null) {
       setState(() {
-        _scanError = 'Verified, but appointment is not loaded locally. Pull to refresh.';
+        _scanError =
+            'Verified, but appointment is not loaded locally. Pull to refresh.';
       });
       return;
     }
@@ -3260,10 +3403,7 @@ class _AppointmentQrScannerScreenState extends State<AppointmentQrScannerScreen>
           ),
           if (_scanError != null) ...[
             const SizedBox(height: 12),
-            Text(
-              _scanError!,
-              style: const TextStyle(color: Color(0xFFB91C1C)),
-            ),
+            Text(_scanError!, style: const TextStyle(color: Color(0xFFB91C1C))),
           ],
           const SizedBox(height: 16),
           if (widget.appointments.isNotEmpty)
@@ -3278,19 +3418,22 @@ class _AppointmentQrScannerScreenState extends State<AppointmentQrScannerScreen>
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                     const SizedBox(height: 8),
-                    ...widget.appointments.take(3).map(
-                      (appointment) => ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        title: Text(appointment.displayId),
-                        subtitle: Text(
-                          '${appointment.hospitalName} • ${appointment.status}',
+                    ...widget.appointments
+                        .take(3)
+                        .map(
+                          (appointment) => ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: Text(appointment.displayId),
+                            subtitle: Text(
+                              '${appointment.hospitalName} • ${appointment.status}',
+                            ),
+                            trailing: IconButton(
+                              onPressed: () =>
+                                  _handleScannedValue(appointment.displayId),
+                              icon: const Icon(Icons.open_in_new),
+                            ),
+                          ),
                         ),
-                        trailing: IconButton(
-                          onPressed: () => _handleScannedValue(appointment.displayId),
-                          icon: const Icon(Icons.open_in_new),
-                        ),
-                      ),
-                    ),
                   ],
                 ),
               ),

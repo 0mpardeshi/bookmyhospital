@@ -510,6 +510,9 @@ app.post('/api/hospitals/register', async (req, res) => {
   }
 
   const hospital = await createPendingHospital(payload);
+  if (!hospital) {
+    return res.status(409).json({ error: 'Email already registered' });
+  }
   io.emit('hospital:pending', hospital);
   emitOverview();
   return res.status(201).json({ hospital });
