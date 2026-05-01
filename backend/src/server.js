@@ -31,6 +31,8 @@ const {
   disciplineHospital,
   overview,
   hospitalAuth,
+  checkTimeSlotAvailability,
+  bulkDelayAppointments,
 } = require('./store');
 
 const PORT = Number(process.env.PORT || 8080);
@@ -669,6 +671,23 @@ app.patch('/api/bookings/:id', async (req, res) => {
     return res.status(400).json({ error: 'No valid update fields provided' });
   }
 
+  if (next.assignedDoctor && next.assignedTime) {
+    const isAvailable = await checkTimeSlotAvailability(
+      current.hospitalId,
+      next.assignedDoctor,
+      next.assignedTime,
+    );
+    if (!isAvailable) {
+      return res.status(409).json({
+        error: 'Time slot conflict',
+        message: `Dr. ${next.assignedDoctor} already has an appointment at ${next.assignedTime}`,
+      });
+    }
+    if (!current.originalAssignedTime) {
+      next.originalAssignedTime = next.assignedTime;
+    }
+  }
+
   const updated = await updateBooking(bookingId, next);
   if (!updated) return respondNotFound(res, 'Booking not found');
 
@@ -698,6 +717,73 @@ app.patch('/api/bookings/:id', async (req, res) => {
   return res.json({ booking: updated });
 });
 
+app.post('/api/hospitals/:id/delay-appointments', async (req, res) => {
+  const hospitalId = String(req.params.id || '').trim();
+  if (!hospitalId) {
+    return res.status(400).json({ error: 'Hospital ID is required' });
+  }
+
+  const hospital = await getHospitalById(hospitalId);
+  if (!hospital) return respondNotFound(res, 'Hospital not found');
+
+  const { command } = req.body || {};
+  const commandStr = String(command || '').trim();
+  
+  let delayMinutes = 0;
+  const minutesMatch = commandStr.match(/@minutes?\s+(\d+)/i);
+  const hoursMatch = commandStr.match(/@hours?\s+(\d+)/i);
+  const secondsMatch = commandStr.match(/@sec(?:onds?)?\s+(\d+)/i);
+
+  if (minutesMatch) {
+    delayMinutes = parseInt(minutesMatch[1], 10);
+  } else if (hoursMatch) {
+    delayMinutes = parseInt(hoursMatch[1], 10) * 60;
+  } else if (secondsMatch) {
+    delayMinutes = Math.ceil(parseInt(secondsMatch[1], 10) / 60);
+  } else {
+    return res.status(400).json({
+      error: 'Invalid command format',
+      message: 'Use @minutes X, @hour X, or @sec X to delay appointments',
+    });
+  }
+
+  if (delayMinutes <= 0 || delayMinutes > 1440) {
+    return res.status(400).json({
+      error: 'Invalid delay duration',
+      message: 'Delay must be between 1 minute and 24 hours',
+    });
+  }
+
+  const updatedBookings = await bulkDelayAppointments(hospitalId, delayMinutes);
+
+  for (const booking of updatedBookings) {
+    if (booking.patientId) {
+      const delayText = delayMinutes >= 60 
+        ? `${Math.floor(delayMinutes / 60)} hour${Math.floor(delayMinutes / 60) > 1 ? 's' : ''}${delayMinutes % 60 ? ` ${delayMinutes % 60} minutes` : ''}`
+        : `${delayMinutes} minute${delayMinutes > 1 ? 's' : ''}`;
+      
+      const notification = await createNotification({
+        patientId: booking.patientId,
+        hospitalId: booking.hospitalId,
+        title: 'Appointment Delayed',
+        message: `Dear patient, sorry for the inconvenience. Your appointment has been delayed by ${delayText}. New time: ${booking.assignedTime}`,
+        type: 'appointment_delay',
+      });
+      io.emit('patient:notification', notification);
+    }
+  }
+
+  io.emit('appointments:bulk_updated', { hospitalId, updatedBookings });
+  await refreshSnapshot();
+  
+  return res.json({
+    success: true,
+    delayMinutes,
+    updatedCount: updatedBookings.length,
+    bookings: updatedBookings,
+  });
+});
+
 app.post('/api/hqr/generate', async (req, res) => {
   const { bookingId, hospitalId } = req.body || {};
   const normalizedBookingId = String(bookingId || '').trim();
@@ -711,8 +797,9 @@ app.post('/api/hqr/generate', async (req, res) => {
   if (String(booking.hospitalId || '') !== normalizedHospitalId) {
     return res.status(403).json({ error: 'Facility does not own this booking' });
   }
-  if (String(booking.status || '').toLowerCase() !== 'accepted') {
-    return res.status(409).json({ error: 'HQR can be generated only for accepted appointments' });
+  const hqrAllowedStatuses = new Set(['accepted', 'assigned', 'queued']);
+  if (!hqrAllowedStatuses.has(String(booking.status || '').toLowerCase())) {
+    return res.status(409).json({ error: 'HQR can only be generated for accepted, assigned, or queued appointments' });
   }
 
   const ts = Math.floor(Date.now() / 1000);
@@ -810,9 +897,10 @@ app.post('/api/hqr/verify', async (req, res) => {
     await auditHqrAttempt({ patientId: normalizedPatientId, bookingId: parsed.bookingId, success: false, reason: 'Booking not found' });
     return res.status(404).json({ ok: false, verified: false, reason: 'Booking not found' });
   }
-  if (String(booking.status || '').toLowerCase() !== 'accepted') {
-    await auditHqrAttempt({ patientId: normalizedPatientId, bookingId: parsed.bookingId, success: false, reason: 'Booking is not accepted' });
-    return res.status(409).json({ ok: false, verified: false, reason: 'Booking is not accepted' });
+  const hqrVerifyAllowed = new Set(['accepted', 'assigned', 'queued']);
+  if (!hqrVerifyAllowed.has(String(booking.status || '').toLowerCase())) {
+    await auditHqrAttempt({ patientId: normalizedPatientId, bookingId: parsed.bookingId, success: false, reason: 'Booking is not in a verifiable state' });
+    return res.status(409).json({ ok: false, verified: false, reason: 'Booking is not in a verifiable state' });
   }
   if (String(booking.patientId || '') !== normalizedPatientId) {
     await auditHqrAttempt({ patientId: normalizedPatientId, bookingId: parsed.bookingId, success: false, reason: 'Patient does not own appointment' });

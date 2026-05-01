@@ -196,6 +196,8 @@ function ensureSchemas() {
       status: { type: String, default: 'confirmed' },
       assignedDoctor: { type: String, default: null },
       assignedTime: { type: String, default: null },
+      originalAssignedTime: { type: String, default: null },
+      delayMinutes: { type: Number, default: 0 },
       queuePosition: { type: Number, default: null },
     },
     baseOptions,
@@ -510,7 +512,7 @@ async function updateBooking(id, updates) {
     ensureSchemas();
     const booking = await schemas.Booking.findOne({ $or: [{ bookingId: id }, { _id: id }] });
     if (!booking) return null;
-    const keys = ['status', 'assignedDoctor', 'assignedTime', 'queuePosition'];
+    const keys = ['status', 'assignedDoctor', 'assignedTime', 'originalAssignedTime', 'delayMinutes', 'queuePosition'];
     keys.forEach((key) => {
       if (Object.prototype.hasOwnProperty.call(updates, key)) {
         booking[key] = updates[key];
@@ -523,7 +525,7 @@ async function updateBooking(id, updates) {
   const index = memory.bookings.findIndex((b) => b.id === id || b.bookingId === id);
   if (index < 0) return null;
   const booking = memory.bookings[index];
-  const keys = ['status', 'assignedDoctor', 'assignedTime', 'queuePosition'];
+  const keys = ['status', 'assignedDoctor', 'assignedTime', 'originalAssignedTime', 'delayMinutes', 'queuePosition'];
   keys.forEach((key) => {
     if (Object.prototype.hasOwnProperty.call(updates, key)) {
       booking[key] = updates[key];
@@ -639,6 +641,96 @@ async function hospitalAuth({ email }) {
   return hospital.status === 'approved' ? hospital : null;
 }
 
+async function checkTimeSlotAvailability(hospitalId, doctorName, timeSlot) {
+  if (useMongo) {
+    ensureSchemas();
+    const normalizedDoctor = String(doctorName || '').trim().toLowerCase();
+    const normalizedTime = String(timeSlot || '').trim().toLowerCase();
+    const existing = await schemas.Booking.findOne({
+      hospitalId,
+      assignedDoctor: { $regex: new RegExp(`^${normalizedDoctor}$`, 'i') },
+      assignedTime: { $regex: new RegExp(`^${normalizedTime}$`, 'i') },
+      status: { $in: ['accepted', 'assigned', 'pending'] },
+    });
+    return !existing;
+  }
+  const normalizedDoctor = String(doctorName || '').trim().toLowerCase();
+  const normalizedTime = String(timeSlot || '').trim().toLowerCase();
+  const conflict = memory.bookings.find(
+    (b) =>
+      b.hospitalId === hospitalId &&
+      String(b.assignedDoctor || '').trim().toLowerCase() === normalizedDoctor &&
+      String(b.assignedTime || '').trim().toLowerCase() === normalizedTime &&
+      ['accepted', 'assigned', 'pending'].includes(b.status),
+  );
+  return !conflict;
+}
+
+async function bulkDelayAppointments(hospitalId, delayMinutes) {
+  if (useMongo) {
+    ensureSchemas();
+    const bookings = await schemas.Booking.find({
+      hospitalId,
+      status: { $in: ['accepted', 'assigned', 'pending'] },
+      assignedTime: { $ne: null },
+    });
+    const updated = [];
+    for (const booking of bookings) {
+      if (!booking.originalAssignedTime) {
+        booking.originalAssignedTime = booking.assignedTime;
+      }
+      booking.delayMinutes = (booking.delayMinutes || 0) + delayMinutes;
+      const newTime = addMinutesToTime(booking.originalAssignedTime, booking.delayMinutes);
+      booking.assignedTime = newTime;
+      await booking.save();
+      updated.push(normalize(booking, 'booking'));
+    }
+    return updated;
+  }
+  const updated = [];
+  for (let i = 0; i < memory.bookings.length; i++) {
+    const booking = memory.bookings[i];
+    if (
+      booking.hospitalId === hospitalId &&
+      ['accepted', 'assigned', 'pending'].includes(booking.status) &&
+      booking.assignedTime
+    ) {
+      if (!booking.originalAssignedTime) {
+        booking.originalAssignedTime = booking.assignedTime;
+      }
+      booking.delayMinutes = (booking.delayMinutes || 0) + delayMinutes;
+      const newTime = addMinutesToTime(booking.originalAssignedTime, booking.delayMinutes);
+      booking.assignedTime = newTime;
+      booking.updatedAt = new Date().toISOString();
+      memory.bookings[i] = booking;
+      updated.push(booking);
+    }
+  }
+  return updated;
+}
+
+function addMinutesToTime(timeStr, minutes) {
+  const match = String(timeStr || '').match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+  if (!match) return timeStr;
+  let hours = parseInt(match[1], 10);
+  let mins = parseInt(match[2], 10);
+  const period = match[3].toUpperCase();
+  if (period === 'PM' && hours !== 12) hours += 12;
+  if (period === 'AM' && hours === 12) hours = 0;
+  mins += minutes;
+  hours += Math.floor(mins / 60);
+  mins = mins % 60;
+  hours = hours % 24;
+  let newPeriod = 'AM';
+  let displayHours = hours;
+  if (hours >= 12) {
+    newPeriod = 'PM';
+    if (hours > 12) displayHours = hours - 12;
+  }
+  if (displayHours === 0) displayHours = 12;
+  return `${String(displayHours).padStart(2, '0')}:${String(mins).padStart(2, '0')} ${newPeriod}`;
+}
+
 module.exports = {
   useMongo,
   connectMongo,
@@ -663,4 +755,6 @@ module.exports = {
   disciplineHospital,
   overview,
   hospitalAuth,
+  checkTimeSlotAvailability,
+  bulkDelayAppointments,
 };

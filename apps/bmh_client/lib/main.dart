@@ -1475,26 +1475,29 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
     super.dispose();
   }
 
-  Future<void> _openQrEntryPoint() async {
+  Future<void> _openQrScannerForAppointment(
+    AppointmentRecord appointment,
+  ) async {
     final match = await Navigator.of(context).push<AppointmentRecord>(
       MaterialPageRoute(
         builder: (_) => AppointmentQrScannerScreen(
-          appointments: _appointments,
+          appointments: [appointment],
           api: _api,
           patientId: _patientUniqueId,
+          targetAppointmentId: appointment.id,
         ),
       ),
     );
-    if (!mounted || match == null) return;
-    setState(() {
-      _selectedTabIndex = 1;
-      _highlightedAppointmentId = match.id;
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Scanned ${match.displayId} for ${match.hospitalName}.'),
-      ),
-    );
+    if (!mounted) return;
+    if (match != null) {
+      setState(() => _highlightedAppointmentId = match.id);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: Colors.green,
+          content: Text('✓ Verified! ${match.displayId} — You may enter.'),
+        ),
+      );
+    }
   }
 
   Future<void> _updatePatientAppointmentStatus(
@@ -2032,10 +2035,6 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
                           child: const Text('Emergency'),
                         ),
                         OutlinedButton(
-                          onPressed: _openQrEntryPoint,
-                          child: const Text('QR Scanner'),
-                        ),
-                        OutlinedButton(
                           onPressed: () => _complain(h),
                           child: const Text('Raise Complaint'),
                         ),
@@ -2092,32 +2091,44 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
             'assigned',
             'queued',
           }.contains(appointment.status);
+          final canScanQr = {'assigned', 'queued'}.contains(appointment.status);
+          final actions = <AppointmentCardAction>[];
+          if (canScanQr) {
+            actions.add(
+              AppointmentCardAction(
+                label: 'Scan QR',
+                semanticLabel:
+                    'Scan QR to verify appointment ${appointment.displayId}',
+                onPressed: () => _openQrScannerForAppointment(appointment),
+              ),
+            );
+          }
+          if (canEdit) {
+            actions.add(
+              AppointmentCardAction(
+                label: 'Cancel',
+                semanticLabel: 'Cancel appointment ${appointment.displayId}',
+                onPressed: () =>
+                    _updatePatientAppointmentStatus(appointment, 'canceled'),
+              ),
+            );
+            actions.add(
+              AppointmentCardAction(
+                label: 'Reschedule',
+                semanticLabel:
+                    'Request reschedule for appointment ${appointment.displayId}',
+                onPressed: () => _updatePatientAppointmentStatus(
+                  appointment,
+                  'reschedule_requested',
+                ),
+              ),
+            );
+          }
           return AppointmentCard(
             appointment: appointment,
             highlighted: _highlightedAppointmentId == appointment.id,
             showHospitalName: true,
-            actions: canEdit
-                ? [
-                    AppointmentCardAction(
-                      label: 'Cancel',
-                      semanticLabel:
-                          'Cancel appointment ${appointment.displayId}',
-                      onPressed: () => _updatePatientAppointmentStatus(
-                        appointment,
-                        'canceled',
-                      ),
-                    ),
-                    AppointmentCardAction(
-                      label: 'Reschedule',
-                      semanticLabel:
-                          'Request reschedule for appointment ${appointment.displayId}',
-                      onPressed: () => _updatePatientAppointmentStatus(
-                        appointment,
-                        'reschedule_requested',
-                      ),
-                    ),
-                  ]
-                : const [],
+            actions: actions,
           );
         }),
       ],
@@ -2173,10 +2184,6 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
                   : 'Last sync: ${_lastSync!.toLocal()}',
             ),
           ),
-        ),
-        FilledButton.tonal(
-          onPressed: _openQrEntryPoint,
-          child: const Text('Open QR Scanner Entry Point'),
         ),
       ],
     );
@@ -2707,6 +2714,7 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
       );
       socket.on('booking:created', (_) => _loadAppointments());
       socket.on('booking:updated', (_) => _loadAppointments());
+      socket.on('appointments:bulk_updated', (_) => _loadAppointments());
       socket.on('hospital:availability-updated', (_) => _loadAppointments());
       socket.on('hospital:snapshot', (_) => _loadAppointments());
       socket.on('hospital:status-updated', (payload) {
@@ -2981,6 +2989,97 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
     return _appointments.where((item) => item.status == _statusFilter).toList();
   }
 
+  List<AppointmentRecord> _sortAppointmentsByTime(
+    List<AppointmentRecord> appointments,
+  ) {
+    final sorted = List<AppointmentRecord>.from(appointments);
+    sorted.sort((a, b) {
+      final timeA = a.assignedTime ?? '';
+      final timeB = b.assignedTime ?? '';
+      if (timeA.isEmpty && timeB.isEmpty) return 0;
+      if (timeA.isEmpty) return 1;
+      if (timeB.isEmpty) return -1;
+      return _compareTimeStrings(timeA, timeB);
+    });
+    return sorted;
+  }
+
+  int _compareTimeStrings(String timeA, String timeB) {
+    final matchA = RegExp(
+      r'(\d{1,2}):(\d{2})\s*(AM|PM)',
+      caseSensitive: false,
+    ).firstMatch(timeA);
+    final matchB = RegExp(
+      r'(\d{1,2}):(\d{2})\s*(AM|PM)',
+      caseSensitive: false,
+    ).firstMatch(timeB);
+    if (matchA == null || matchB == null) return 0;
+
+    int hourA = int.parse(matchA.group(1)!);
+    final minA = int.parse(matchA.group(2)!);
+    final periodA = matchA.group(3)!.toUpperCase();
+
+    int hourB = int.parse(matchB.group(1)!);
+    final minB = int.parse(matchB.group(2)!);
+    final periodB = matchB.group(3)!.toUpperCase();
+
+    if (periodA == 'PM' && hourA != 12) hourA += 12;
+    if (periodA == 'AM' && hourA == 12) hourA = 0;
+    if (periodB == 'PM' && hourB != 12) hourB += 12;
+    if (periodB == 'AM' && hourB == 12) hourB = 0;
+
+    final totalMinA = hourA * 60 + minA;
+    final totalMinB = hourB * 60 + minB;
+
+    return totalMinA.compareTo(totalMinB);
+  }
+
+  Future<void> _bulkDelayAppointments(String command) async {
+    if (command.trim().isEmpty) return;
+
+    try {
+      final facilityId = _hospitalId.text.trim();
+      final response = await http.post(
+        Uri.parse(
+          '${BackendConfig.baseUrl}/api/hospitals/$facilityId/delay-appointments',
+        ),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'command': command}),
+      );
+
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        final updatedCount = body['updatedCount'] ?? 0;
+        final delayMinutes = body['delayMinutes'] ?? 0;
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '✓ $updatedCount appointments delayed by $delayMinutes minutes',
+            ),
+            backgroundColor: Colors.green,
+          ),
+        );
+
+        await _loadAppointments();
+      } else {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        final errorMsg =
+            body['message'] ?? body['error'] ?? 'Failed to delay appointments';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(errorMsg), backgroundColor: Colors.red),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final isClinic = widget.role == FacilityRole.clinic;
@@ -3190,9 +3289,76 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
       return const Center(child: CircularProgressIndicator());
     }
     final filtered = _filteredAppointments();
+    final sortedFiltered = _sortAppointmentsByTime(filtered);
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        Card(
+          color: const Color(0xFFFEF3C7),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.access_time, size: 20),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Q-Less: Bulk Delay Appointments',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Use @minutes X, @hour X, or @sec X to delay all pending appointments',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        decoration: const InputDecoration(
+                          hintText: 'e.g., @minutes 10 or @hour 1',
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                          contentPadding: EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 10,
+                          ),
+                        ),
+                        onSubmitted: (value) => _bulkDelayAppointments(value),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton.icon(
+                      onPressed: _accountStatus != 'approved'
+                          ? null
+                          : () {
+                              showDialog<String>(
+                                context: context,
+                                builder: (ctx) => _BulkDelayDialog(
+                                  onSubmit: (cmd) {
+                                    Navigator.of(ctx).pop();
+                                    _bulkDelayAppointments(cmd);
+                                  },
+                                ),
+                              );
+                            },
+                      icon: const Icon(Icons.update, size: 18),
+                      label: const Text('Delay All'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
         Wrap(
           spacing: 8,
           runSpacing: 8,
@@ -3214,12 +3380,12 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
           ],
         ),
         const SizedBox(height: 12),
-        if (filtered.isEmpty)
+        if (sortedFiltered.isEmpty)
           const Card(
             child: ListTile(title: Text('No appointments for selected filter')),
           )
         else
-          ...filtered.map((appointment) {
+          ...sortedFiltered.map((appointment) {
             final actions = <AppointmentCardAction>[];
             if (appointment.status == 'pending') {
               actions.add(
@@ -3748,11 +3914,13 @@ class AppointmentQrScannerScreen extends StatefulWidget {
     required this.appointments,
     required this.api,
     required this.patientId,
+    this.targetAppointmentId,
   });
 
   final List<AppointmentRecord> appointments;
   final ApiService api;
   final String patientId;
+  final String? targetAppointmentId;
 
   @override
   State<AppointmentQrScannerScreen> createState() =>
@@ -3828,11 +3996,75 @@ class _AppointmentQrScannerScreenState
 
   @override
   Widget build(BuildContext context) {
+    final isScoped = widget.targetAppointmentId != null;
+    final targetApt = isScoped
+        ? widget.appointments
+              .where((a) => a.id == widget.targetAppointmentId)
+              .firstOrNull
+        : null;
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Scan Appointment QR')),
+      appBar: AppBar(
+        title: Text(isScoped ? 'Verify Appointment' : 'Scan Appointment QR'),
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          if (targetApt != null) ...[
+            Card(
+              color: const Color(0xFFECFDF5),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: const BorderSide(color: Color(0xFF6EE7B7)),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.qr_code_scanner,
+                          color: Color(0xFF059669),
+                          size: 20,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Verifying Appointment',
+                          style: Theme.of(context).textTheme.titleSmall
+                              ?.copyWith(
+                                color: const Color(0xFF059669),
+                                fontWeight: FontWeight.bold,
+                              ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      targetApt.displayId,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    if (targetApt.assignedDoctor != null &&
+                        targetApt.assignedDoctor!.isNotEmpty)
+                      Text('Doctor: ${targetApt.assignedDoctor}'),
+                    if (targetApt.assignedTime != null &&
+                        targetApt.assignedTime!.isNotEmpty)
+                      Text('Time: ${targetApt.assignedTime}'),
+                    Text('Facility: ${targetApt.hospitalName}'),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Ask the facility to show their HQR code, then scan it below to confirm your entry.',
+                      style: TextStyle(fontSize: 12, color: Color(0xFF6B7280)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
           AspectRatio(
             aspectRatio: 1,
             child: ClipRRect(
@@ -3882,8 +4114,10 @@ class _AppointmentQrScannerScreenState
             ),
           ),
           const SizedBox(height: 16),
-          const Text(
-            'Scan HQR token (or verify URL), or paste token manually.',
+          Text(
+            isScoped
+                ? 'Scan the HQR code shown by the facility to verify your appointment.'
+                : 'Scan HQR token (or verify URL), or paste token manually.',
           ),
           const SizedBox(height: 12),
           TextField(
@@ -3901,10 +4135,31 @@ class _AppointmentQrScannerScreenState
           ),
           if (_scanError != null) ...[
             const SizedBox(height: 12),
-            Text(_scanError!, style: const TextStyle(color: Color(0xFFB91C1C))),
+            Card(
+              color: const Color(0xFFFEF2F2),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.error_outline,
+                      color: Color(0xFFB91C1C),
+                      size: 20,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _scanError!,
+                        style: const TextStyle(color: Color(0xFFB91C1C)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ],
-          const SizedBox(height: 16),
-          if (widget.appointments.isNotEmpty)
+          if (!isScoped && widget.appointments.isNotEmpty) ...[
+            const SizedBox(height: 16),
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(12),
@@ -3936,6 +4191,7 @@ class _AppointmentQrScannerScreenState
                 ),
               ),
             ),
+          ],
         ],
       ),
     );
@@ -3968,14 +4224,25 @@ class TimeSlotPickerDialog extends StatefulWidget {
 class _TimeSlotPickerDialogState extends State<TimeSlotPickerDialog> {
   late final TextEditingController _doctorController;
   late String _selectedTime;
-  static const _slots = [
-    '09:00 AM',
-    '10:30 AM',
-    '12:00 PM',
-    '02:30 PM',
-    '04:00 PM',
-    '06:30 PM',
-  ];
+  bool _validating = false;
+  String? _conflictMessage;
+
+  static List<String> _generate15MinSlots() {
+    final slots = <String>[];
+    for (int hour = 9; hour <= 21; hour++) {
+      for (int minute = 0; minute < 60; minute += 15) {
+        if (hour == 21 && minute > 0) break;
+        final displayHour = hour > 12 ? hour - 12 : (hour == 0 ? 12 : hour);
+        final period = hour >= 12 ? 'PM' : 'AM';
+        final timeStr =
+            '${displayHour.toString().padLeft(2, '0')}:${minute.toString().padLeft(2, '0')} $period';
+        slots.add(timeStr);
+      }
+    }
+    return slots;
+  }
+
+  static final _slots = _generate15MinSlots();
 
   @override
   void initState() {
@@ -3992,36 +4259,164 @@ class _TimeSlotPickerDialogState extends State<TimeSlotPickerDialog> {
     super.dispose();
   }
 
+  Future<void> _validateAndAssign() async {
+    final doctor = _doctorController.text.trim();
+    if (doctor.isEmpty) {
+      setState(() => _conflictMessage = 'Please enter doctor name');
+      return;
+    }
+
+    setState(() {
+      _validating = true;
+      _conflictMessage = null;
+    });
+
+    Navigator.of(
+      context,
+    ).pop(SlotSelection(doctor: doctor, time: _selectedTime));
+  }
+
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
       title: Text(widget.title),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          TextField(
-            controller: _doctorController,
-            decoration: const InputDecoration(
-              labelText: 'Doctor name',
-              border: OutlineInputBorder(),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _doctorController,
+              decoration: const InputDecoration(
+                labelText: 'Doctor name',
+                border: OutlineInputBorder(),
+              ),
             ),
-          ),
-          const SizedBox(height: 12),
-          DropdownButtonFormField<String>(
-            initialValue: _selectedTime,
-            decoration: const InputDecoration(
-              labelText: 'Time slot',
-              border: OutlineInputBorder(),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              initialValue: _selectedTime,
+              decoration: const InputDecoration(
+                labelText: 'Time slot (15-min intervals)',
+                border: OutlineInputBorder(),
+              ),
+              isExpanded: true,
+              items: _slots
+                  .map(
+                    (slot) => DropdownMenuItem(value: slot, child: Text(slot)),
+                  )
+                  .toList(),
+              onChanged: (value) {
+                if (value == null) return;
+                setState(() {
+                  _selectedTime = value;
+                  _conflictMessage = null;
+                });
+              },
             ),
-            items: _slots
-                .map((slot) => DropdownMenuItem(value: slot, child: Text(slot)))
-                .toList(),
-            onChanged: (value) {
-              if (value == null) return;
-              setState(() => _selectedTime = value);
-            },
-          ),
-        ],
+            if (_conflictMessage != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                _conflictMessage!,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.error,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _validating ? null : _validateAndAssign,
+          child: Text(_validating ? 'Assigning...' : 'Assign'),
+        ),
+      ],
+    );
+  }
+}
+
+class _BulkDelayDialog extends StatefulWidget {
+  const _BulkDelayDialog({required this.onSubmit});
+
+  final void Function(String command) onSubmit;
+
+  @override
+  State<_BulkDelayDialog> createState() => _BulkDelayDialogState();
+}
+
+class _BulkDelayDialogState extends State<_BulkDelayDialog> {
+  final _controller = TextEditingController();
+  String _selectedPreset = '@minutes 10';
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.text = _selectedPreset;
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Delay All Appointments'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Select a preset or enter a custom delay command:',
+              style: TextStyle(fontSize: 14),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final preset in const [
+                  '@minutes 10',
+                  '@minutes 15',
+                  '@minutes 30',
+                  '@hour 1',
+                  '@hour 2',
+                ])
+                  ChoiceChip(
+                    label: Text(preset),
+                    selected: _selectedPreset == preset,
+                    onSelected: (_) {
+                      setState(() {
+                        _selectedPreset = preset;
+                        _controller.text = preset;
+                      });
+                    },
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _controller,
+              decoration: const InputDecoration(
+                labelText: 'Custom command',
+                hintText: '@minutes 10 or @hour 1',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'All pending/assigned appointments will be delayed and patients will be notified.',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ],
+        ),
       ),
       actions: [
         TextButton(
@@ -4030,13 +4425,12 @@ class _TimeSlotPickerDialogState extends State<TimeSlotPickerDialog> {
         ),
         FilledButton(
           onPressed: () {
-            final doctor = _doctorController.text.trim();
-            if (doctor.isEmpty) return;
-            Navigator.of(
-              context,
-            ).pop(SlotSelection(doctor: doctor, time: _selectedTime));
+            final cmd = _controller.text.trim();
+            if (cmd.isNotEmpty) {
+              widget.onSubmit(cmd);
+            }
           },
-          child: const Text('Assign'),
+          child: const Text('Delay All'),
         ),
       ],
     );
