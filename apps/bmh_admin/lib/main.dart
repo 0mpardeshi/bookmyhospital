@@ -9,7 +9,7 @@ import 'package:socket_io_client/socket_io_client.dart' as io;
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await BackendConfig.load();
-  runApp(const BookMyHospitalAdminApp());
+  runApp(const QLessAdminApp());
 }
 
 const String kDefaultApiBaseUrl = String.fromEnvironment(
@@ -48,13 +48,13 @@ class BackendConfig {
   }
 }
 
-class BookMyHospitalAdminApp extends StatelessWidget {
-  const BookMyHospitalAdminApp({super.key});
+class QLessAdminApp extends StatelessWidget {
+  const QLessAdminApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'BookMyHospital Admin',
+      title: 'Q-Less Admin',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
@@ -308,7 +308,7 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    'BookMyHospital Admin',
+                    'Q-Less Admin',
                     style: Theme.of(context).textTheme.titleLarge,
                   ),
                   Text(

@@ -16,7 +16,7 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Hive.initFlutter();
   await BackendConfig.load();
-  runApp(const BookMyHospitalApp());
+  runApp(const QLessApp());
 }
 
 const String kDefaultApiBaseUrl = String.fromEnvironment(
@@ -69,8 +69,8 @@ class BackendConfig {
   }
 }
 
-class BookMyHospitalApp extends StatelessWidget {
-  const BookMyHospitalApp({super.key});
+class QLessApp extends StatelessWidget {
+  const QLessApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -213,6 +213,7 @@ class HospitalInfo {
   final String facilityType;
 
   FacilityRole get role => facilityRoleFromString(facilityType);
+  bool get isClinic => role == FacilityRole.clinic;
 
   factory HospitalInfo.fromJson(Map<String, dynamic> json) {
     return HospitalInfo(
@@ -1239,6 +1240,7 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
   bool _loading = true;
   bool _loadingAppointments = true;
   int _selectedTabIndex = 0;
+  FacilityRole _homeFilter = FacilityRole.hospital;
   String? _highlightedAppointmentId;
   String _patientUniqueId = '';
   Timer? _pollTimer;
@@ -1681,6 +1683,7 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
     if (_loading) {
       return const Center(child: CircularProgressIndicator());
     }
+    final filtered = _hospitals.where((h) => h.role == _homeFilter).toList();
     return ListView(
       padding: const EdgeInsets.all(12),
       children: [
@@ -1692,12 +1695,43 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
             ),
           ),
         ),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: SegmentedButton<FacilityRole>(
+            style: ButtonStyle(
+              visualDensity: VisualDensity.comfortable,
+              shape: WidgetStatePropertyAll(
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+            segments: const [
+              ButtonSegment<FacilityRole>(
+                value: FacilityRole.hospital,
+                label: Text('Hospitals'),
+                icon: Icon(Icons.local_hospital),
+              ),
+              ButtonSegment<FacilityRole>(
+                value: FacilityRole.clinic,
+                label: Text('Clinics'),
+                icon: Icon(Icons.medical_services),
+              ),
+            ],
+            selected: {_homeFilter},
+            onSelectionChanged: (selection) {
+              setState(() => _homeFilter = selection.first);
+            },
+          ),
+        ),
         Card(
           color: const Color(0xFFE0F2FE),
           child: ListTile(
-            title: const Text('Live facility sync'),
+            title: Text(
+              _homeFilter == FacilityRole.hospital
+                  ? 'Live hospital sync'
+                  : 'Live clinic sync',
+            ),
             subtitle: Text(
-              'Updated ${_lastSync == null ? 'just now' : _lastSync!.toLocal().toString()} • ${_hospitals.length} facilities visible',
+              'Updated ${_lastSync == null ? 'just now' : _lastSync!.toLocal().toString()} • ${filtered.length} ${_homeFilter.label.toLowerCase()}${filtered.length == 1 ? '' : 's'} visible',
             ),
             trailing: FilledButton.tonal(
               onPressed: _loadHospitals,
@@ -1705,7 +1739,31 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
             ),
           ),
         ),
-        ..._hospitals.map(
+        if (filtered.isEmpty)
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                children: [
+                  Icon(
+                    _homeFilter == FacilityRole.hospital
+                        ? Icons.local_hospital_outlined
+                        : Icons.medical_services_outlined,
+                    size: 48,
+                    color: Colors.grey,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'No ${_homeFilter.label.toLowerCase()}s available right now',
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodyMedium?.copyWith(color: Colors.grey),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ...filtered.map(
           (h) => Card(
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(18),
@@ -1715,6 +1773,48 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: h.isClinic
+                              ? const Color(0xFFE0F2FE)
+                              : const Color(0xFFCCFBF1),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              h.isClinic
+                                  ? Icons.medical_services
+                                  : Icons.local_hospital,
+                              size: 14,
+                              color: h.isClinic
+                                  ? const Color(0xFF1E40AF)
+                                  : const Color(0xFF0D9488),
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              h.isClinic ? 'Clinic' : 'Hospital',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: h.isClinic
+                                    ? const Color(0xFF1E40AF)
+                                    : const Color(0xFF0D9488),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
                   Text(
                     h.name,
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
@@ -1908,7 +2008,7 @@ class _AiHelpScreenState extends State<AiHelpScreen> {
     {
       'role': 'ai',
       'text':
-          'Hi! I am your BookMyHospital AI helper. Ask for emergency flow, booking help, or complaint guidance.',
+          'Hi! I am your Q-Less AI helper. Ask for emergency flow, booking help, or complaint guidance.',
     },
   ];
 

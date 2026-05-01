@@ -11,9 +11,9 @@ import 'package:bmh_admin/main.dart';
 
 void main() {
   testWidgets('loads admin login screen', (WidgetTester tester) async {
-    await tester.pumpWidget(const BookMyHospitalAdminApp());
+    await tester.pumpWidget(const QLessAdminApp());
 
-    expect(find.text('BookMyHospital Admin'), findsOneWidget);
+    expect(find.text('Q-Less Admin'), findsOneWidget);
     expect(find.text('Secure Login'), findsOneWidget);
   });
 }

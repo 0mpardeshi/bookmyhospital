@@ -11,10 +11,10 @@ import 'package:bmh_client/main.dart';
 
 void main() {
   testWidgets('loads entry screen', (WidgetTester tester) async {
-    await tester.pumpWidget(const BookMyHospitalApp());
+    await tester.pumpWidget(const QLessApp());
 
-    expect(find.text('BookMyHospital'), findsOneWidget);
+    expect(find.text('Q-Less'), findsOneWidget);
     expect(find.text('Join as Patient'), findsOneWidget);
-    expect(find.text('Join as Hospital'), findsOneWidget);
+    expect(find.text('Join as Hospitals or Clinics'), findsOneWidget);
   });
 }
