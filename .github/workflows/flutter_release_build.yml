@@ -1,0 +1,62 @@
+name: Flutter Release APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/bmh_client/**'
+      - 'apps/bmh_admin/**'
+  workflow_dispatch:
+
+jobs:
+  build-client:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/bmh_client
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.7'
+          channel: stable
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Release APK (arm64 only)
+        run: flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons --shrink
+
+      - name: Upload Client APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Q-Less-Client-arm64-release
+          path: apps/bmh_client/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+
+  build-admin:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/bmh_admin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.7'
+          channel: stable
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Release APK (arm64 only)
+        run: flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons --shrink
+
+      - name: Upload Admin APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Q-Less-Admin-arm64-release
+          path: apps/bmh_admin/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
