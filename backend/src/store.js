@@ -650,7 +650,7 @@ async function checkTimeSlotAvailability(hospitalId, doctorName, timeSlot) {
       hospitalId,
       assignedDoctor: { $regex: new RegExp(`^${normalizedDoctor}$`, 'i') },
       assignedTime: { $regex: new RegExp(`^${normalizedTime}$`, 'i') },
-      status: { $in: ['accepted', 'assigned', 'pending'] },
+      status: { $in: ['accepted', 'assigned', 'in_service', 'queued', 'pending'] },
     });
     return !existing;
   }
@@ -661,7 +661,7 @@ async function checkTimeSlotAvailability(hospitalId, doctorName, timeSlot) {
       b.hospitalId === hospitalId &&
       String(b.assignedDoctor || '').trim().toLowerCase() === normalizedDoctor &&
       String(b.assignedTime || '').trim().toLowerCase() === normalizedTime &&
-      ['accepted', 'assigned', 'pending'].includes(b.status),
+      ['accepted', 'assigned', 'in_service', 'queued', 'pending'].includes(b.status),
   );
   return !conflict;
 }

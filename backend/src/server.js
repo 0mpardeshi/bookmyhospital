@@ -627,6 +627,17 @@ app.post('/api/bookings', async (req, res) => {
   return res.status(201).json({ booking });
 });
 
+function _timeToMinutes(timeStr) {
+  const match = String(timeStr || '').match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+  if (!match) return -1;
+  let hours = parseInt(match[1], 10);
+  const mins = parseInt(match[2], 10);
+  const period = match[3].toUpperCase();
+  if (period === 'PM' && hours !== 12) hours += 12;
+  if (period === 'AM' && hours === 12) hours = 0;
+  return hours * 60 + mins;
+}
+
 app.patch('/api/bookings/:id', async (req, res) => {
   const bookingId = String(req.params.id || '').trim();
   if (!bookingId) {
@@ -645,6 +656,7 @@ app.patch('/api/bookings/:id', async (req, res) => {
       'accepted',
       'declined',
       'assigned',
+      'in_service',
       'queued',
       'completed',
       'canceled',
@@ -688,18 +700,36 @@ app.patch('/api/bookings/:id', async (req, res) => {
     }
   }
 
+  if (next.assignedTime) {
+    const allBookings = await listBookings({ hospitalId: current.hospitalId });
+    const thisId = String(current.id || current.bookingId || '');
+    const newTimeMin = _timeToMinutes(next.assignedTime);
+    const activeStatuses = new Set(['accepted', 'assigned', 'in_service', 'queued']);
+    const earlierCount = allBookings.filter(b => {
+      if (String(b.id || b.bookingId || '') === thisId) return false;
+      if (!activeStatuses.has(String(b.status || ''))) return false;
+      if (!b.assignedTime) return false;
+      return _timeToMinutes(b.assignedTime) < newTimeMin;
+    }).length;
+    next.queuePosition = earlierCount + 1;
+  }
+
   const updated = await updateBooking(bookingId, next);
   if (!updated) return respondNotFound(res, 'Booking not found');
 
   if (updated.patientId) {
     let message = `Appointment ${updated.id || updated.bookingId} updated.`;
-    if (next.status) {
+    if (next.status === 'in_service') {
+      message = `Your appointment check-in is verified. You are now in service${updated.assignedDoctor ? ` with Dr. ${updated.assignedDoctor}` : ''}.`;
+    } else if (next.status === 'completed') {
+      message = `Dear patient, your check up got completed. You may have a good day.`;
+    } else if (next.status) {
       message = `Appointment status changed to ${next.status.replaceAll('_', ' ')}.`;
     } else if (next.assignedDoctor || next.assignedTime) {
-      message = `Appointment assignment updated${next.assignedDoctor ? `: Dr. ${next.assignedDoctor}` : ''}${next.assignedTime ? ` at ${next.assignedTime}` : ''}.`;
+      message = `Appointment assignment updated${next.assignedDoctor ? `: Dr. ${next.assignedDoctor}` : ''}${next.assignedTime ? ` at ${next.assignedTime}` : ''}${updated.queuePosition ? `. Queue position: #${updated.queuePosition}` : ''}.`;
     } else if (Object.prototype.hasOwnProperty.call(next, 'queuePosition')) {
       message = next.queuePosition
-        ? `Your queue position is ${next.queuePosition}.`
+        ? `Your queue position is #${next.queuePosition}.`
         : 'Queue position updated.';
     }
     const notification = await createNotification({

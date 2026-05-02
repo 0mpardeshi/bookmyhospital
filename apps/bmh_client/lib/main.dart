@@ -438,7 +438,8 @@ class AppointmentFlow {
     const transitions = <String, Set<String>>{
       'pending': {'accepted', 'declined', 'canceled', 'reschedule_requested'},
       'accepted': {'assigned', 'declined', 'canceled'},
-      'assigned': {'queued', 'reschedule_requested', 'canceled'},
+      'assigned': {'in_service', 'queued', 'reschedule_requested', 'canceled'},
+      'in_service': {'completed', 'canceled'},
       'queued': {'completed', 'canceled'},
       'reschedule_requested': {'assigned', 'declined', 'canceled'},
     };
@@ -1267,6 +1268,7 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
   DateTime? _lastSync;
   Set<String> _seenNotificationIds = <String>{};
   Set<String> _starredNotificationIds = <String>{};
+  final Map<String, Timer> _completionTimers = {};
 
   @override
   void initState() {
@@ -1431,6 +1433,17 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
       _appointments = appointments;
       _loadingAppointments = false;
     });
+    for (final apt in appointments) {
+      if (apt.status == 'completed' && !_completionTimers.containsKey(apt.id)) {
+        _completionTimers[apt.id] = Timer(const Duration(seconds: 10), () {
+          if (!mounted) return;
+          setState(() {
+            _appointments.removeWhere((a) => a.id == apt.id);
+            _completionTimers.remove(apt.id);
+          });
+        });
+      }
+    }
   }
 
   void _openAiAssistant() {
@@ -1472,6 +1485,9 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
     _notificationPollTimer?.cancel();
     _appointmentPollTimer?.cancel();
     _socket?.dispose();
+    for (final t in _completionTimers.values) {
+      t.cancel();
+    }
     super.dispose();
   }
 
@@ -2054,6 +2070,47 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
     );
   }
 
+  int _patientTimeToMinutes(String timeStr) {
+    final match = RegExp(
+      r'(\d{1,2}):(\d{2})\s*(AM|PM)',
+      caseSensitive: false,
+    ).firstMatch(timeStr);
+    if (match == null) return -1;
+    int hours = int.parse(match.group(1)!);
+    final mins = int.parse(match.group(2)!);
+    final period = match.group(3)!.toUpperCase();
+    if (period == 'PM' && hours != 12) hours += 12;
+    if (period == 'AM' && hours == 12) hours = 0;
+    return hours * 60 + mins;
+  }
+
+  List<AppointmentRecord> _sortedPatientAppointments() {
+    const statusOrder = <String, int>{
+      'in_service': 0,
+      'assigned': 1,
+      'queued': 2,
+      'accepted': 3,
+      'pending': 4,
+      'reschedule_requested': 5,
+      'declined': 6,
+      'canceled': 7,
+      'completed': 8,
+    };
+    final sorted = List<AppointmentRecord>.from(_appointments);
+    sorted.sort((a, b) {
+      final orderA = statusOrder[a.status] ?? 9;
+      final orderB = statusOrder[b.status] ?? 9;
+      if (orderA != orderB) return orderA.compareTo(orderB);
+      final minA = _patientTimeToMinutes(a.assignedTime ?? '');
+      final minB = _patientTimeToMinutes(b.assignedTime ?? '');
+      if (minA >= 0 && minB >= 0) return minA.compareTo(minB);
+      if (minA >= 0) return -1;
+      if (minB >= 0) return 1;
+      return b.createdAt.compareTo(a.createdAt);
+    });
+    return sorted;
+  }
+
   Widget _buildAppointmentsTab() {
     if (_loadingAppointments) {
       return const Center(child: CircularProgressIndicator());
@@ -2080,18 +2137,20 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
         ],
       );
     }
+    final sorted = _sortedPatientAppointments();
     return ListView(
       physics: const BouncingScrollPhysics(),
       padding: const EdgeInsets.all(12),
       children: [
-        ..._appointments.map((appointment) {
+        ...sorted.map((appointment) {
+          final isInService = appointment.status == 'in_service';
+          final canScanQr = {'assigned', 'queued'}.contains(appointment.status);
           final canEdit = {
             'pending',
             'accepted',
             'assigned',
             'queued',
           }.contains(appointment.status);
-          final canScanQr = {'assigned', 'queued'}.contains(appointment.status);
           final actions = <AppointmentCardAction>[];
           if (canScanQr) {
             actions.add(
@@ -2103,7 +2162,7 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
               ),
             );
           }
-          if (canEdit) {
+          if (canEdit && !isInService) {
             actions.add(
               AppointmentCardAction(
                 label: 'Cancel',
@@ -2624,6 +2683,7 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
   bool _loadingAppointments = false;
   bool _saving = false;
   String _accountStatus = 'approved';
+  final Map<String, Timer> _completionTimers = {};
 
   @override
   void initState() {
@@ -2749,6 +2809,18 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
             ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
       if (!mounted) return;
       setState(() => _appointments = merged);
+      for (final apt in merged) {
+        if (apt.status == 'completed' &&
+            !_completionTimers.containsKey(apt.id)) {
+          _completionTimers[apt.id] = Timer(const Duration(seconds: 10), () {
+            if (!mounted) return;
+            setState(() {
+              _appointments.removeWhere((a) => a.id == apt.id);
+              _completionTimers.remove(apt.id);
+            });
+          });
+        }
+      }
     } catch (_) {}
     _loadingAppointments = false;
   }
@@ -2759,6 +2831,9 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
     _statusTimer?.cancel();
     _banExitTimer?.cancel();
     _socket?.dispose();
+    for (final t in _completionTimers.values) {
+      t.cancel();
+    }
     _hospitalId.dispose();
     _beds.dispose();
     _icu.dispose();
@@ -2860,6 +2935,16 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
         return updated;
       }).toList()..sort((a, b) => b.createdAt.compareTo(a.createdAt));
     });
+    if (nextStatus == 'completed' &&
+        !_completionTimers.containsKey(updated.id)) {
+      _completionTimers[updated.id] = Timer(const Duration(seconds: 10), () {
+        if (!mounted) return;
+        setState(() {
+          _appointments.removeWhere((a) => a.id == updated.id);
+          _completionTimers.remove(updated.id);
+        });
+      });
+    }
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
@@ -2878,6 +2963,8 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
         title: 'Assign doctor & time',
         initialDoctor: appointment.assignedDoctor,
         initialTime: appointment.assignedTime,
+        appointments: _appointments,
+        excludeBookingId: appointment.id,
       ),
     );
     if (selected == null) return;
@@ -3284,12 +3371,29 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
     );
   }
 
+  Map<String, int> _computeQueueNumbers() {
+    final active = _appointments
+        .where(
+          (a) =>
+              {'assigned', 'in_service', 'queued'}.contains(a.status) &&
+              (a.assignedTime ?? '').isNotEmpty,
+        )
+        .toList();
+    final sorted = _sortAppointmentsByTime(active);
+    final result = <String, int>{};
+    for (int i = 0; i < sorted.length; i++) {
+      result[sorted[i].id] = i + 1;
+    }
+    return result;
+  }
+
   Widget _buildFacilityAppointmentsTab() {
     if (_loadingAppointments) {
       return const Center(child: CircularProgressIndicator());
     }
     final filtered = _filteredAppointments();
     final sortedFiltered = _sortAppointmentsByTime(filtered);
+    final queueNumbers = _computeQueueNumbers();
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -3368,6 +3472,7 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
               'pending',
               'accepted',
               'assigned',
+              'in_service',
               'queued',
               'completed',
               'declined',
@@ -3424,17 +3529,19 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
             } else if (appointment.status == 'assigned') {
               actions.add(
                 AppointmentCardAction(
-                  label: 'Queue',
-                  semanticLabel:
-                      'Set queue position for ${appointment.displayId}',
-                  onPressed: () => _openQueueDialog(appointment),
-                ),
-              );
-              actions.add(
-                AppointmentCardAction(
                   label: 'HQR',
                   semanticLabel: 'Generate HQR for ${appointment.displayId}',
                   onPressed: () => _openHqrForAppointment(appointment),
+                ),
+              );
+            } else if (appointment.status == 'in_service') {
+              actions.add(
+                AppointmentCardAction(
+                  label: 'Complete Service',
+                  semanticLabel:
+                      'Complete service for ${appointment.displayId}',
+                  onPressed: () =>
+                      _transitionAppointment(appointment, 'completed'),
                 ),
               );
             } else if (appointment.status == 'queued') {
@@ -3459,6 +3566,7 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
               appointment: appointment,
               showHospitalName: false,
               actions: actions,
+              queueNumber: queueNumbers[appointment.id],
             );
           }),
       ],
@@ -3554,15 +3662,17 @@ class AppointmentCard extends StatelessWidget {
   const AppointmentCard({
     super.key,
     required this.appointment,
-    required this.showHospitalName,
+    this.showHospitalName = false,
     this.highlighted = false,
-    this.actions = const [],
+    required this.actions,
+    this.queueNumber,
   });
 
   final AppointmentRecord appointment;
   final bool showHospitalName;
   final bool highlighted;
   final List<AppointmentCardAction> actions;
+  final int? queueNumber;
 
   @override
   Widget build(BuildContext context) {
@@ -3571,11 +3681,15 @@ class AppointmentCard extends StatelessWidget {
       curve: Curves.easeOutCubic,
       child: Card(
         elevation: 0,
-        color: const Color(0xFFF8FFFD),
+        color: appointment.status == 'in_service'
+            ? const Color(0xFFECFDF5)
+            : const Color(0xFFF8FFFD),
         shape: RoundedRectangleBorder(
           side: BorderSide(
-            color: highlighted ? const Color(0xFF0F766E) : Colors.transparent,
-            width: highlighted ? 2 : 0,
+            color: appointment.status == 'in_service'
+                ? const Color(0xFF34D399)
+                : (highlighted ? const Color(0xFF0F766E) : Colors.transparent),
+            width: (appointment.status == 'in_service' || highlighted) ? 2 : 0,
           ),
           borderRadius: BorderRadius.circular(12),
         ),
@@ -3589,6 +3703,25 @@ class AppointmentCard extends StatelessWidget {
                 runSpacing: 8,
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
+                  if (queueNumber != null)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0D9488),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        'Q#$queueNumber',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
                   Text(
                     appointment.displayId,
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
@@ -3612,7 +3745,25 @@ class AppointmentCard extends StatelessWidget {
               if ((appointment.assignedTime ?? '').isNotEmpty)
                 Text('Time: ${appointment.assignedTime}'),
               if (appointment.queuePosition != null)
-                Text('Queue position: ${appointment.queuePosition}'),
+                Container(
+                  margin: const EdgeInsets.only(top: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0D9488).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    'Your Queue #${appointment.queuePosition}',
+                    style: const TextStyle(
+                      color: Color(0xFF0F766E),
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
               if (actions.isNotEmpty) ...[
                 const SizedBox(height: 10),
                 Wrap(
@@ -3653,6 +3804,7 @@ class StatusBadge extends StatelessWidget {
       'accepted' => const Color(0xFF0369A1),
       'assigned' => const Color(0xFF4338CA),
       'queued' => const Color(0xFF0F766E),
+      'in_service' => const Color(0xFF059669),
       'completed' => const Color(0xFF15803D),
       'declined' || 'canceled' => const Color(0xFFB91C1C),
       'reschedule_requested' => const Color(0xFF7C2D12),
@@ -3991,7 +4143,13 @@ class _AppointmentQrScannerScreenState
       return;
     }
     _handledScan = true;
-    Navigator.of(context).pop(appointment);
+    setState(() => _scanError = null);
+    final updatedApt = await widget.api.updateAppointment(
+      appointmentId: appointment.id,
+      status: 'in_service',
+    );
+    if (!mounted) return;
+    Navigator.of(context).pop(updatedApt ?? appointment);
   }
 
   @override
@@ -4211,11 +4369,15 @@ class TimeSlotPickerDialog extends StatefulWidget {
     required this.title,
     this.initialDoctor,
     this.initialTime,
+    this.appointments,
+    this.excludeBookingId,
   });
 
   final String title;
   final String? initialDoctor;
   final String? initialTime;
+  final List<AppointmentRecord>? appointments;
+  final String? excludeBookingId;
 
   @override
   State<TimeSlotPickerDialog> createState() => _TimeSlotPickerDialogState();
@@ -4244,6 +4406,28 @@ class _TimeSlotPickerDialogState extends State<TimeSlotPickerDialog> {
 
   static final _slots = _generate15MinSlots();
 
+  Set<String> _computeTakenTimes(String doctorName) {
+    if (widget.appointments == null) return {};
+    final normalizedDoctor = doctorName.trim().toLowerCase();
+    if (normalizedDoctor.isEmpty) return {};
+    return widget.appointments!
+        .where((a) {
+          if (a.id == widget.excludeBookingId) return false;
+          if ((a.assignedDoctor ?? '').trim().toLowerCase() != normalizedDoctor)
+            return false;
+          if (!{
+            'accepted',
+            'assigned',
+            'in_service',
+            'queued',
+          }.contains(a.status))
+            return false;
+          return (a.assignedTime ?? '').isNotEmpty;
+        })
+        .map((a) => a.assignedTime!.trim())
+        .toSet();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -4251,6 +4435,9 @@ class _TimeSlotPickerDialogState extends State<TimeSlotPickerDialog> {
     _selectedTime = _slots.contains(widget.initialTime)
         ? widget.initialTime!
         : _slots.first;
+    _doctorController.addListener(() {
+      if (mounted) setState(() {});
+    });
   }
 
   @override
@@ -4292,26 +4479,59 @@ class _TimeSlotPickerDialogState extends State<TimeSlotPickerDialog> {
               ),
             ),
             const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              initialValue: _selectedTime,
-              decoration: const InputDecoration(
-                labelText: 'Time slot (15-min intervals)',
-                border: OutlineInputBorder(),
-              ),
-              isExpanded: true,
-              items: _slots
-                  .map(
-                    (slot) => DropdownMenuItem(value: slot, child: Text(slot)),
-                  )
-                  .toList(),
-              onChanged: (value) {
-                if (value == null) return;
-                setState(() {
-                  _selectedTime = value;
-                  _conflictMessage = null;
-                });
-              },
-            ),
+            (() {
+              final takenTimes = _computeTakenTimes(_doctorController.text);
+              return DropdownButtonFormField<String>(
+                value: _selectedTime,
+                decoration: const InputDecoration(
+                  labelText: 'Time slot (15-min intervals)',
+                  border: OutlineInputBorder(),
+                ),
+                isExpanded: true,
+                items: _slots.map((slot) {
+                  final isTaken = takenTimes.contains(slot.trim());
+                  return DropdownMenuItem<String>(
+                    value: slot,
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            slot,
+                            style: TextStyle(
+                              color: isTaken ? const Color(0xFFEF4444) : null,
+                            ),
+                          ),
+                        ),
+                        if (isTaken)
+                          const Text(
+                            'Taken',
+                            style: TextStyle(
+                              color: Color(0xFFEF4444),
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                      ],
+                    ),
+                  );
+                }).toList(),
+                onChanged: (value) {
+                  if (value == null) return;
+                  final taken = _computeTakenTimes(_doctorController.text);
+                  if (taken.contains(value.trim())) {
+                    setState(
+                      () => _conflictMessage =
+                          '${_doctorController.text.trim()} already has an appointment at $value',
+                    );
+                    return;
+                  }
+                  setState(() {
+                    _selectedTime = value;
+                    _conflictMessage = null;
+                  });
+                },
+              );
+            })(),
             if (_conflictMessage != null) ...[
               const SizedBox(height: 8),
               Text(
