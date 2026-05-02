@@ -1088,11 +1088,6 @@ class EntryScreen extends StatelessWidget {
                 const SizedBox(height: 8),
                 const RotatingTaglines(lines: kEntryTaglines),
                 const SizedBox(height: 12),
-                OutlinedButton.icon(
-                  onPressed: () => _setBackendUrl(context),
-                  icon: const Icon(Icons.link),
-                  label: Text('Backend: ${BackendConfig.baseUrl}'),
-                ),
                 const Spacer(),
                 _RoleCard(
                   title: 'Join as Patient',
