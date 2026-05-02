@@ -199,6 +199,7 @@ function ensureSchemas() {
       originalAssignedTime: { type: String, default: null },
       delayMinutes: { type: Number, default: 0 },
       queuePosition: { type: Number, default: null },
+      emergencyReason: { type: String, default: null },
     },
     baseOptions,
   );

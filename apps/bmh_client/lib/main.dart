@@ -295,6 +295,7 @@ class AppointmentRecord {
     this.assignedTime,
     this.queuePosition,
     this.updatedAt,
+    this.emergencyReason,
   });
 
   final String id;
@@ -312,9 +313,11 @@ class AppointmentRecord {
   final String? assignedTime;
   final int? queuePosition;
   final String? updatedAt;
+  final String? emergencyReason;
 
   FacilityRole get facilityRole => facilityRoleFromString(facilityType);
   bool get isClinic => facilityRole == FacilityRole.clinic;
+  bool get isEmergency => type.toLowerCase() == 'emergency';
 
   factory AppointmentRecord.fromBookingJson(Map<String, dynamic> json) {
     final id =
@@ -341,6 +344,7 @@ class AppointmentRecord {
           ? json['queuePosition'] as int
           : int.tryParse('${json['queuePosition'] ?? ''}'),
       updatedAt: json['updatedAt']?.toString(),
+      emergencyReason: json['emergencyReason']?.toString(),
     );
   }
 
@@ -368,6 +372,7 @@ class AppointmentRecord {
           ? json['queuePosition'] as int
           : int.tryParse('${json['queuePosition'] ?? ''}'),
       updatedAt: json['updatedAt']?.toString(),
+      emergencyReason: json['emergencyReason']?.toString(),
     );
   }
 
@@ -387,6 +392,7 @@ class AppointmentRecord {
     'assignedTime': assignedTime,
     'queuePosition': queuePosition,
     'updatedAt': updatedAt,
+    'emergencyReason': emergencyReason,
   };
 
   AppointmentRecord copyWith({
@@ -413,6 +419,7 @@ class AppointmentRecord {
       assignedTime: assignedTime ?? this.assignedTime,
       queuePosition: queuePosition ?? this.queuePosition,
       updatedAt: updatedAt ?? this.updatedAt,
+      emergencyReason: emergencyReason ?? this.emergencyReason,
     );
   }
 
@@ -601,19 +608,24 @@ class ApiService {
     required String patientName,
     required String patientId,
     required String type,
+    String? emergencyReason,
   }) async {
     try {
       final uri = Uri.parse('${BackendConfig.baseUrl}/api/bookings');
+      final body = <String, dynamic>{
+        'hospitalId': hospitalId,
+        'patientName': patientName,
+        'patientId': patientId,
+        'type': type,
+      };
+      if (emergencyReason != null && emergencyReason.isNotEmpty) {
+        body['emergencyReason'] = emergencyReason;
+      }
       final response = await http
           .post(
             uri,
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'hospitalId': hospitalId,
-              'patientName': patientName,
-              'patientId': patientId,
-              'type': type,
-            }),
+            body: jsonEncode(body),
           )
           .timeout(const Duration(seconds: 10));
       return response.statusCode == 201;
@@ -1269,6 +1281,7 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
   Set<String> _seenNotificationIds = <String>{};
   Set<String> _starredNotificationIds = <String>{};
   final Map<String, Timer> _completionTimers = {};
+  String _appointmentFilter = 'hospital';
 
   @override
   void initState() {
@@ -1435,7 +1448,7 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
     });
     for (final apt in appointments) {
       if (apt.status == 'completed' && !_completionTimers.containsKey(apt.id)) {
-        _completionTimers[apt.id] = Timer(const Duration(seconds: 10), () {
+        _completionTimers[apt.id] = Timer(const Duration(seconds: 5), () {
           if (!mounted) return;
           setState(() {
             _appointments.removeWhere((a) => a.id == apt.id);
@@ -1451,6 +1464,154 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
       MaterialPageRoute<void>(
         builder: (_) =>
             AiHelpScreen(apiService: _api, patientName: widget.patientName),
+      ),
+    );
+  }
+
+  Future<void> _showEmergencySheet(HospitalInfo h) async {
+    final controller = TextEditingController();
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setModalState) {
+            bool submitting = false;
+            return Container(
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+              ),
+              padding: EdgeInsets.only(
+                left: 20,
+                right: 20,
+                top: 20,
+                bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 40,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade300,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 14,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEF4444),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Row(
+                          children: [
+                            Icon(
+                              Icons.emergency_rounded,
+                              color: Colors.white,
+                              size: 22,
+                            ),
+                            SizedBox(width: 8),
+                            Text(
+                              "What's your emergency?",
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 18,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          'This will help ${h.isClinic ? 'the clinic' : 'the hospital'} to be prepared as per your emergency',
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: controller,
+                    maxLines: 3,
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      hintText:
+                          'e.g. Road accident, pregnancy delivery, heart attack...',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFFEF4444),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                      onPressed: submitting
+                          ? null
+                          : () async {
+                              final reason = controller.text.trim();
+                              if (reason.isEmpty) return;
+                              setModalState(() => submitting = true);
+                              Navigator.of(ctx).pop();
+                              await _bookEmergency(h, reason);
+                            },
+                      icon: const Icon(Icons.send_rounded),
+                      label: Text(
+                        submitting ? 'Sending...' : 'Submit Emergency',
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+    controller.dispose();
+  }
+
+  Future<void> _bookEmergency(HospitalInfo h, String reason) async {
+    final ok = await _api.createBooking(
+      hospitalId: h.id,
+      patientName: widget.patientName,
+      patientId: _patientUniqueId,
+      type: 'Emergency',
+      emergencyReason: reason,
+    );
+    if (!mounted) return;
+    if (ok) {
+      _loadAppointments();
+      _loadHospitals();
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          ok
+              ? 'Emergency request sent to ${h.name}. Please wait for confirmation.'
+              : 'Could not send emergency request. Please try again.',
+        ),
+        backgroundColor: ok ? const Color(0xFFEF4444) : null,
+        duration: const Duration(seconds: 5),
       ),
     );
   }
@@ -2046,9 +2207,26 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
                           onPressed: () => _book(h, 'Appointment'),
                           child: const Text('Book Appointment'),
                         ),
-                        FilledButton.tonal(
-                          onPressed: () => _book(h, 'Emergency'),
-                          child: const Text('Emergency'),
+                        FilledButton(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: const Color(0xFFEF4444),
+                          ),
+                          onPressed: () => _showEmergencySheet(h),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.emergency_rounded,
+                                size: 16,
+                                color: Colors.white,
+                              ),
+                              SizedBox(width: 6),
+                              Text(
+                                'Emergency',
+                                style: TextStyle(color: Colors.white),
+                              ),
+                            ],
+                          ),
                         ),
                         OutlinedButton(
                           onPressed: () => _complain(h),
@@ -2138,11 +2316,83 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
       );
     }
     final sorted = _sortedPatientAppointments();
+    final visible = sorted.where((a) {
+      if (_appointmentFilter == 'emergency') return a.isEmergency;
+      if (_appointmentFilter == 'clinic')
+        return !a.isEmergency && a.facilityType == 'clinic';
+      return !a.isEmergency && a.facilityType == 'hospital';
+    }).toList();
     return ListView(
       physics: const BouncingScrollPhysics(),
       padding: const EdgeInsets.all(12),
       children: [
-        ...sorted.map((appointment) {
+        Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: SegmentedButton<String>(
+            style: ButtonStyle(
+              visualDensity: VisualDensity.compact,
+              shape: WidgetStatePropertyAll(
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+            segments: const [
+              ButtonSegment<String>(
+                value: 'hospital',
+                label: Text('Hospital'),
+                icon: Icon(Icons.local_hospital_outlined),
+              ),
+              ButtonSegment<String>(
+                value: 'clinic',
+                label: Text('Clinic'),
+                icon: Icon(Icons.medical_services_outlined),
+              ),
+              ButtonSegment<String>(
+                value: 'emergency',
+                label: Text('Emergency'),
+                icon: Icon(Icons.emergency_rounded),
+              ),
+            ],
+            selected: {_appointmentFilter},
+            onSelectionChanged: (sel) =>
+                setState(() => _appointmentFilter = sel.first),
+          ),
+        ),
+        if (visible.isEmpty)
+          Card(
+            elevation: 0,
+            color: _appointmentFilter == 'emergency'
+                ? const Color(0xFFFFF1F2)
+                : const Color(0xFFF8FFFD),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+              side: BorderSide(
+                color: _appointmentFilter == 'emergency'
+                    ? const Color(0xFFFCA5A5)
+                    : const Color(0xFFD9FBEF),
+              ),
+            ),
+            child: ListTile(
+              leading: Icon(
+                _appointmentFilter == 'emergency'
+                    ? Icons.emergency_rounded
+                    : Icons.event_note_outlined,
+                color: _appointmentFilter == 'emergency'
+                    ? const Color(0xFFEF4444)
+                    : null,
+              ),
+              title: Text(
+                _appointmentFilter == 'emergency'
+                    ? 'No emergency requests'
+                    : 'No ${_appointmentFilter} appointments',
+              ),
+              subtitle: Text(
+                _appointmentFilter == 'emergency'
+                    ? 'Use the Emergency button on a facility card to request.'
+                    : 'Book from the Home tab.',
+              ),
+            ),
+          ),
+        ...visible.map((appointment) {
           final isInService = appointment.status == 'in_service';
           final canScanQr = {'assigned', 'queued'}.contains(appointment.status);
           final canEdit = {
@@ -2684,6 +2934,7 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
   bool _saving = false;
   String _accountStatus = 'approved';
   final Map<String, Timer> _completionTimers = {};
+  String _apptTypeFilter = 'normal';
 
   @override
   void initState() {
@@ -2812,7 +3063,7 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
       for (final apt in merged) {
         if (apt.status == 'completed' &&
             !_completionTimers.containsKey(apt.id)) {
-          _completionTimers[apt.id] = Timer(const Duration(seconds: 10), () {
+          _completionTimers[apt.id] = Timer(const Duration(seconds: 5), () {
             if (!mounted) return;
             setState(() {
               _appointments.removeWhere((a) => a.id == apt.id);
@@ -2937,7 +3188,7 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
     });
     if (nextStatus == 'completed' &&
         !_completionTimers.containsKey(updated.id)) {
-      _completionTimers[updated.id] = Timer(const Duration(seconds: 10), () {
+      _completionTimers[updated.id] = Timer(const Duration(seconds: 5), () {
         if (!mounted) return;
         setState(() {
           _appointments.removeWhere((a) => a.id == updated.id);
@@ -3072,8 +3323,14 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
   }
 
   List<AppointmentRecord> _filteredAppointments() {
-    if (_statusFilter == 'all') return _appointments;
-    return _appointments.where((item) => item.status == _statusFilter).toList();
+    var list = _appointments.where((a) {
+      if (_apptTypeFilter == 'emergency') return a.isEmergency;
+      return !a.isEmergency;
+    });
+    if (_statusFilter != 'all') {
+      list = list.where((a) => a.status == _statusFilter);
+    }
+    return list.toList();
   }
 
   List<AppointmentRecord> _sortAppointmentsByTime(
@@ -3278,9 +3535,81 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
   }
 
   Widget _buildFacilityDashboardHome(Color approvalColor, bool isClinic) {
+    final activeEmergencies = _appointments
+        .where(
+          (a) =>
+              a.isEmergency &&
+              !{'completed', 'declined', 'canceled'}.contains(a.status),
+        )
+        .length;
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        if (activeEmergencies > 0) ...[
+          GestureDetector(
+            onTap: () => setState(() {
+              _selectedTabIndex = 1;
+              _apptTypeFilter = 'emergency';
+            }),
+            child: Card(
+              elevation: 0,
+              color: const Color(0xFFFFF1F2),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: const BorderSide(color: Color(0xFFFCA5A5), width: 2),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 14,
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEF4444),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(
+                        Icons.emergency_rounded,
+                        color: Colors.white,
+                        size: 24,
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '$activeEmergencies Active Emergency'
+                            ' Case${activeEmergencies > 1 ? 's' : ''}',
+                            style: const TextStyle(
+                              color: Color(0xFFB91C1C),
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
+                            ),
+                          ),
+                          const Text(
+                            'Tap to view and manage emergency appointments',
+                            style: TextStyle(
+                              color: Color(0xFF991B1B),
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Icon(Icons.chevron_right, color: Color(0xFFEF4444)),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
         Card(
           color: const Color(0xFFE0F2FE),
           child: Padding(
@@ -3397,93 +3726,121 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        Card(
-          color: const Color(0xFFFEF3C7),
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Icon(Icons.access_time, size: 20),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Q-Less: Bulk Delay Appointments',
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Use @minutes X, @hour X, or @sec X to delay all pending appointments',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        decoration: const InputDecoration(
-                          hintText: 'e.g., @minutes 10 or @hour 1',
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                          contentPadding: EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 10,
-                          ),
-                        ),
-                        onSubmitted: (value) => _bulkDelayAppointments(value),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    FilledButton.icon(
-                      onPressed: _accountStatus != 'approved'
-                          ? null
-                          : () {
-                              showDialog<String>(
-                                context: context,
-                                builder: (ctx) => _BulkDelayDialog(
-                                  onSubmit: (cmd) {
-                                    Navigator.of(ctx).pop();
-                                    _bulkDelayAppointments(cmd);
-                                  },
-                                ),
-                              );
-                            },
-                      icon: const Icon(Icons.update, size: 18),
-                      label: const Text('Delay All'),
-                    ),
-                  ],
-                ),
-              ],
+        SegmentedButton<String>(
+          style: ButtonStyle(
+            visualDensity: VisualDensity.compact,
+            shape: WidgetStatePropertyAll(
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
           ),
+          segments: const [
+            ButtonSegment<String>(
+              value: 'normal',
+              label: Text('Normal'),
+              icon: Icon(Icons.event_note_outlined),
+            ),
+            ButtonSegment<String>(
+              value: 'emergency',
+              label: Text('Emergency'),
+              icon: Icon(Icons.emergency_rounded),
+            ),
+          ],
+          selected: {_apptTypeFilter},
+          onSelectionChanged: (sel) => setState(() {
+            _apptTypeFilter = sel.first;
+            _statusFilter = 'all';
+          }),
         ),
         const SizedBox(height: 12),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            for (final status in const [
-              'all',
-              'pending',
-              'accepted',
-              'assigned',
-              'in_service',
-              'queued',
-              'completed',
-              'declined',
-            ])
-              ChoiceChip(
-                label: Text(status.toUpperCase()),
-                selected: _statusFilter == status,
-                onSelected: (_) => setState(() => _statusFilter = status),
+        if (_apptTypeFilter == 'normal')
+          Card(
+            color: const Color(0xFFFEF3C7),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.access_time, size: 20),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Q-Less: Bulk Delay Appointments',
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Use @minutes X, @hour X, or @sec X to delay all pending appointments',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          decoration: const InputDecoration(
+                            hintText: 'e.g., @minutes 10 or @hour 1',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                            contentPadding: EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 10,
+                            ),
+                          ),
+                          onSubmitted: (value) => _bulkDelayAppointments(value),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton.icon(
+                        onPressed: _accountStatus != 'approved'
+                            ? null
+                            : () {
+                                showDialog<String>(
+                                  context: context,
+                                  builder: (ctx) => _BulkDelayDialog(
+                                    onSubmit: (cmd) {
+                                      Navigator.of(ctx).pop();
+                                      _bulkDelayAppointments(cmd);
+                                    },
+                                  ),
+                                );
+                              },
+                        icon: const Icon(Icons.update, size: 18),
+                        label: const Text('Delay All'),
+                      ),
+                    ],
+                  ),
+                ],
               ),
-          ],
-        ),
+            ),
+          ),
+        const SizedBox(height: 12),
+        if (_apptTypeFilter == 'normal')
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final status in const [
+                'all',
+                'pending',
+                'accepted',
+                'assigned',
+                'in_service',
+                'queued',
+                'completed',
+                'declined',
+              ])
+                ChoiceChip(
+                  label: Text(status.toUpperCase()),
+                  selected: _statusFilter == status,
+                  onSelected: (_) => setState(() => _statusFilter = status),
+                ),
+            ],
+          ),
         const SizedBox(height: 12),
         if (sortedFiltered.isEmpty)
           const Card(
@@ -3492,75 +3849,116 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
         else
           ...sortedFiltered.map((appointment) {
             final actions = <AppointmentCardAction>[];
-            if (appointment.status == 'pending') {
-              actions.add(
-                AppointmentCardAction(
-                  label: 'Accept',
-                  semanticLabel: 'Accept appointment ${appointment.displayId}',
-                  onPressed: () =>
-                      _transitionAppointment(appointment, 'accepted'),
-                ),
-              );
-              actions.add(
-                AppointmentCardAction(
-                  label: 'Decline',
-                  semanticLabel: 'Decline appointment ${appointment.displayId}',
-                  onPressed: () =>
-                      _transitionAppointment(appointment, 'declined'),
-                ),
-              );
-            } else if (appointment.status == 'accepted' ||
-                appointment.status == 'reschedule_requested') {
-              actions.add(
-                AppointmentCardAction(
-                  label: 'Assign',
-                  semanticLabel:
-                      'Assign doctor and time for ${appointment.displayId}',
-                  onPressed: () => _openAssignDialog(appointment),
-                ),
-              );
-              actions.add(
-                AppointmentCardAction(
-                  label: 'HQR',
-                  semanticLabel: 'Generate HQR for ${appointment.displayId}',
-                  onPressed: () => _openHqrForAppointment(appointment),
-                ),
-              );
-            } else if (appointment.status == 'assigned') {
-              actions.add(
-                AppointmentCardAction(
-                  label: 'HQR',
-                  semanticLabel: 'Generate HQR for ${appointment.displayId}',
-                  onPressed: () => _openHqrForAppointment(appointment),
-                ),
-              );
-            } else if (appointment.status == 'in_service') {
-              actions.add(
-                AppointmentCardAction(
-                  label: 'Complete Service',
-                  semanticLabel:
-                      'Complete service for ${appointment.displayId}',
-                  onPressed: () =>
-                      _transitionAppointment(appointment, 'completed'),
-                ),
-              );
-            } else if (appointment.status == 'queued') {
-              actions.add(
-                AppointmentCardAction(
-                  label: 'Complete',
-                  semanticLabel:
-                      'Mark appointment ${appointment.displayId} complete',
-                  onPressed: () =>
-                      _transitionAppointment(appointment, 'completed'),
-                ),
-              );
-              actions.add(
-                AppointmentCardAction(
-                  label: 'HQR',
-                  semanticLabel: 'Generate HQR for ${appointment.displayId}',
-                  onPressed: () => _openHqrForAppointment(appointment),
-                ),
-              );
+            if (appointment.isEmergency) {
+              if (appointment.status == 'pending') {
+                actions.add(
+                  AppointmentCardAction(
+                    label: 'Accept Emergency',
+                    semanticLabel: 'Accept emergency ${appointment.displayId}',
+                    onPressed: () =>
+                        _transitionAppointment(appointment, 'accepted'),
+                  ),
+                );
+                actions.add(
+                  AppointmentCardAction(
+                    label: 'Decline',
+                    semanticLabel: 'Decline emergency ${appointment.displayId}',
+                    onPressed: () =>
+                        _transitionAppointment(appointment, 'declined'),
+                  ),
+                );
+              } else if (appointment.status == 'accepted') {
+                actions.add(
+                  AppointmentCardAction(
+                    label: 'HQR',
+                    semanticLabel: 'Generate HQR for ${appointment.displayId}',
+                    onPressed: () => _openHqrForAppointment(appointment),
+                  ),
+                );
+              } else if (appointment.status == 'in_service') {
+                actions.add(
+                  AppointmentCardAction(
+                    label: 'Complete Service',
+                    semanticLabel:
+                        'Complete service for ${appointment.displayId}',
+                    onPressed: () =>
+                        _transitionAppointment(appointment, 'completed'),
+                  ),
+                );
+              }
+            } else {
+              if (appointment.status == 'pending') {
+                actions.add(
+                  AppointmentCardAction(
+                    label: 'Accept',
+                    semanticLabel:
+                        'Accept appointment ${appointment.displayId}',
+                    onPressed: () =>
+                        _transitionAppointment(appointment, 'accepted'),
+                  ),
+                );
+                actions.add(
+                  AppointmentCardAction(
+                    label: 'Decline',
+                    semanticLabel:
+                        'Decline appointment ${appointment.displayId}',
+                    onPressed: () =>
+                        _transitionAppointment(appointment, 'declined'),
+                  ),
+                );
+              } else if (appointment.status == 'accepted' ||
+                  appointment.status == 'reschedule_requested') {
+                actions.add(
+                  AppointmentCardAction(
+                    label: 'Assign',
+                    semanticLabel:
+                        'Assign doctor and time for ${appointment.displayId}',
+                    onPressed: () => _openAssignDialog(appointment),
+                  ),
+                );
+                actions.add(
+                  AppointmentCardAction(
+                    label: 'HQR',
+                    semanticLabel: 'Generate HQR for ${appointment.displayId}',
+                    onPressed: () => _openHqrForAppointment(appointment),
+                  ),
+                );
+              } else if (appointment.status == 'assigned') {
+                actions.add(
+                  AppointmentCardAction(
+                    label: 'HQR',
+                    semanticLabel: 'Generate HQR for ${appointment.displayId}',
+                    onPressed: () => _openHqrForAppointment(appointment),
+                  ),
+                );
+              } else if (appointment.status == 'in_service') {
+                actions.add(
+                  AppointmentCardAction(
+                    label: 'Complete Service',
+                    semanticLabel:
+                        'Complete service for ${appointment.displayId}',
+                    onPressed: () =>
+                        _transitionAppointment(appointment, 'completed'),
+                  ),
+                );
+              } else if (appointment.status == 'queued') {
+                actions.add(
+                  AppointmentCardAction(
+                    label: 'Complete',
+                    semanticLabel:
+                        'Mark appointment ${appointment.displayId} complete',
+                    onPressed: () =>
+                        _transitionAppointment(appointment, 'completed'),
+                  ),
+                );
+                actions.add(
+                  AppointmentCardAction(
+                    label: 'HQR',
+                    semanticLabel: 'Generate HQR for ${appointment.displayId}',
+                    onPressed: () => _openHqrForAppointment(appointment),
+                  ),
+                );
+              }
             }
             return AppointmentCard(
               appointment: appointment,
@@ -3681,15 +4079,24 @@ class AppointmentCard extends StatelessWidget {
       curve: Curves.easeOutCubic,
       child: Card(
         elevation: 0,
-        color: appointment.status == 'in_service'
+        color: appointment.isEmergency
+            ? const Color(0xFFFFF1F2)
+            : appointment.status == 'in_service'
             ? const Color(0xFFECFDF5)
             : const Color(0xFFF8FFFD),
         shape: RoundedRectangleBorder(
           side: BorderSide(
-            color: appointment.status == 'in_service'
+            color: appointment.isEmergency
+                ? const Color(0xFFFCA5A5)
+                : appointment.status == 'in_service'
                 ? const Color(0xFF34D399)
                 : (highlighted ? const Color(0xFF0F766E) : Colors.transparent),
-            width: (appointment.status == 'in_service' || highlighted) ? 2 : 0,
+            width:
+                (appointment.isEmergency ||
+                    appointment.status == 'in_service' ||
+                    highlighted)
+                ? 2
+                : 0,
           ),
           borderRadius: BorderRadius.circular(12),
         ),
@@ -3703,6 +4110,36 @@ class AppointmentCard extends StatelessWidget {
                 runSpacing: 8,
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
+                  if (appointment.isEmergency)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEF4444),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.emergency_rounded,
+                            color: Colors.white,
+                            size: 12,
+                          ),
+                          SizedBox(width: 4),
+                          Text(
+                            'EMERGENCY',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   if (queueNumber != null)
                     Container(
                       padding: const EdgeInsets.symmetric(
@@ -3744,6 +4181,43 @@ class AppointmentCard extends StatelessWidget {
                 Text('Doctor: ${appointment.assignedDoctor}'),
               if ((appointment.assignedTime ?? '').isNotEmpty)
                 Text('Time: ${appointment.assignedTime}'),
+              if ((appointment.emergencyReason ?? '').isNotEmpty)
+                Container(
+                  margin: const EdgeInsets.only(top: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEF4444).withValues(alpha: 0.09),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: const Color(0xFFFCA5A5),
+                      width: 1,
+                    ),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(
+                        Icons.emergency_rounded,
+                        size: 14,
+                        color: Color(0xFFEF4444),
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          appointment.emergencyReason!,
+                          style: const TextStyle(
+                            color: Color(0xFFB91C1C),
+                            fontWeight: FontWeight.w500,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               if (appointment.queuePosition != null)
                 Container(
                   margin: const EdgeInsets.only(top: 4),

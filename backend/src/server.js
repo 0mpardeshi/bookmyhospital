@@ -606,6 +606,7 @@ app.post('/api/bookings', async (req, res) => {
     type,
     priority: payload.priority || 'normal',
     status: 'confirmed',
+    emergencyReason: payload.emergencyReason || null,
   });
 
   const updates = {};
@@ -719,7 +720,9 @@ app.patch('/api/bookings/:id', async (req, res) => {
 
   if (updated.patientId) {
     let message = `Appointment ${updated.id || updated.bookingId} updated.`;
-    if (next.status === 'in_service') {
+    if (next.status === 'accepted' && String(current.type || '').toLowerCase() === 'emergency') {
+      message = `Your emergency request at ${updated.hospitalName} has been accepted. Please rush immediately.`;
+    } else if (next.status === 'in_service') {
       message = `Your appointment check-in is verified. You are now in service${updated.assignedDoctor ? ` with Dr. ${updated.assignedDoctor}` : ''}.`;
     } else if (next.status === 'completed') {
       message = `Dear patient, your check up got completed. You may have a good day.`;
