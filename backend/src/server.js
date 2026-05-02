@@ -718,6 +718,22 @@ app.patch('/api/bookings/:id', async (req, res) => {
   const updated = await updateBooking(bookingId, next);
   if (!updated) return respondNotFound(res, 'Booking not found');
 
+  if (next.status === 'completed') {
+    try {
+      const allActive = (await listBookings({ hospitalId: updated.hospitalId }))
+        .filter(b => {
+          const bid = String(b.id || b.bookingId || '');
+          return bid !== String(updated.id || updated.bookingId || '') &&
+            ['assigned', 'queued', 'in_service'].includes(String(b.status || '')) &&
+            b.assignedTime;
+        })
+        .sort((a, b) => _timeToMinutes(a.assignedTime) - _timeToMinutes(b.assignedTime));
+      for (let i = 0; i < allActive.length; i++) {
+        await updateBooking(allActive[i].id || allActive[i].bookingId, { queuePosition: i + 1 });
+      }
+    } catch (_) {}
+  }
+
   if (updated.patientId) {
     let message = `Appointment ${updated.id || updated.bookingId} updated.`;
     if (next.status === 'accepted' && String(current.type || '').toLowerCase() === 'emergency') {
@@ -725,7 +741,11 @@ app.patch('/api/bookings/:id', async (req, res) => {
     } else if (next.status === 'in_service') {
       message = `Your appointment check-in is verified. You are now in service${updated.assignedDoctor ? ` with Dr. ${updated.assignedDoctor}` : ''}.`;
     } else if (next.status === 'completed') {
-      message = `Dear patient, your check up got completed. You may have a good day.`;
+      if (String(current.type || '').toLowerCase() === 'emergency') {
+        message = `We are delighted to inform you that your treatment has been completed. Please visit the counter for any further assistance.`;
+      } else {
+        message = `Dear patient, your check up got completed. You may have a good day.`;
+      }
     } else if (next.status) {
       message = `Appointment status changed to ${next.status.replaceAll('_', ' ')}.`;
     } else if (next.assignedDoctor || next.assignedTime) {

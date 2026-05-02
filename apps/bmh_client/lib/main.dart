@@ -419,7 +419,7 @@ class AppointmentRecord {
       assignedTime: assignedTime ?? this.assignedTime,
       queuePosition: queuePosition ?? this.queuePosition,
       updatedAt: updatedAt ?? this.updatedAt,
-      emergencyReason: emergencyReason ?? this.emergencyReason,
+      emergencyReason: emergencyReason ?? emergencyReason,
     );
   }
 
@@ -1281,6 +1281,7 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
   Set<String> _seenNotificationIds = <String>{};
   Set<String> _starredNotificationIds = <String>{};
   final Map<String, Timer> _completionTimers = {};
+  final Set<String> _dismissedCompletedIds = {};
   String _appointmentFilter = 'hospital';
 
   @override
@@ -1440,7 +1441,10 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
 
   Future<void> _loadAppointments() async {
     if (_patientUniqueId.trim().isEmpty) return;
-    final appointments = await _api.getPatientAppointments(_patientUniqueId);
+    final raw = await _api.getPatientAppointments(_patientUniqueId);
+    final appointments = raw
+        .where((a) => !_dismissedCompletedIds.contains(a.id))
+        .toList();
     if (!mounted) return;
     setState(() {
       _appointments = appointments;
@@ -1451,9 +1455,11 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
         _completionTimers[apt.id] = Timer(const Duration(seconds: 5), () {
           if (!mounted) return;
           setState(() {
+            _dismissedCompletedIds.add(apt.id);
             _appointments.removeWhere((a) => a.id == apt.id);
             _completionTimers.remove(apt.id);
           });
+          _loadAppointments();
         });
       }
     }
@@ -2318,8 +2324,9 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
     final sorted = _sortedPatientAppointments();
     final visible = sorted.where((a) {
       if (_appointmentFilter == 'emergency') return a.isEmergency;
-      if (_appointmentFilter == 'clinic')
+      if (_appointmentFilter == 'clinic') {
         return !a.isEmergency && a.facilityType == 'clinic';
+      }
       return !a.isEmergency && a.facilityType == 'hospital';
     }).toList();
     return ListView(
@@ -2383,7 +2390,7 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
               title: Text(
                 _appointmentFilter == 'emergency'
                     ? 'No emergency requests'
-                    : 'No ${_appointmentFilter} appointments',
+                    : 'No $_appointmentFilter appointments',
               ),
               subtitle: Text(
                 _appointmentFilter == 'emergency'
@@ -2394,7 +2401,9 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
           ),
         ...visible.map((appointment) {
           final isInService = appointment.status == 'in_service';
-          final canScanQr = {'assigned', 'queued'}.contains(appointment.status);
+          final canScanQr = appointment.isEmergency
+              ? {'accepted', 'assigned', 'queued'}.contains(appointment.status)
+              : {'assigned', 'queued'}.contains(appointment.status);
           final canEdit = {
             'pending',
             'accepted',
@@ -2934,6 +2943,7 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
   bool _saving = false;
   String _accountStatus = 'approved';
   final Map<String, Timer> _completionTimers = {};
+  final Set<String> _dismissedCompletedIds = {};
   String _apptTypeFilter = 'normal';
 
   @override
@@ -3059,16 +3069,23 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
           remote.map((item) => localActions[item.id] ?? item).toList()
             ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
       if (!mounted) return;
-      setState(() => _appointments = merged);
+      setState(
+        () => _appointments = merged
+            .where((a) => !_dismissedCompletedIds.contains(a.id))
+            .toList(),
+      );
       for (final apt in merged) {
         if (apt.status == 'completed' &&
-            !_completionTimers.containsKey(apt.id)) {
+            !_completionTimers.containsKey(apt.id) &&
+            !_dismissedCompletedIds.contains(apt.id)) {
           _completionTimers[apt.id] = Timer(const Duration(seconds: 5), () {
             if (!mounted) return;
             setState(() {
+              _dismissedCompletedIds.add(apt.id);
               _appointments.removeWhere((a) => a.id == apt.id);
               _completionTimers.remove(apt.id);
             });
+            _loadAppointments();
           });
         }
       }
@@ -3191,9 +3208,11 @@ class _HospitalDashboardScreenState extends State<HospitalDashboardScreen> {
       _completionTimers[updated.id] = Timer(const Duration(seconds: 5), () {
         if (!mounted) return;
         setState(() {
+          _dismissedCompletedIds.add(updated.id);
           _appointments.removeWhere((a) => a.id == updated.id);
           _completionTimers.remove(updated.id);
         });
+        _loadAppointments();
       });
     }
     ScaffoldMessenger.of(context).showSnackBar(
@@ -4218,7 +4237,7 @@ class AppointmentCard extends StatelessWidget {
                     ],
                   ),
                 ),
-              if (appointment.queuePosition != null)
+              if ((queueNumber ?? appointment.queuePosition) != null)
                 Container(
                   margin: const EdgeInsets.only(top: 4),
                   padding: const EdgeInsets.symmetric(
@@ -4230,7 +4249,7 @@ class AppointmentCard extends StatelessWidget {
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Text(
-                    'Your Queue #${appointment.queuePosition}',
+                    'Your Queue #${queueNumber ?? appointment.queuePosition}',
                     style: const TextStyle(
                       color: Color(0xFF0F766E),
                       fontWeight: FontWeight.w600,
@@ -4887,15 +4906,18 @@ class _TimeSlotPickerDialogState extends State<TimeSlotPickerDialog> {
     return widget.appointments!
         .where((a) {
           if (a.id == widget.excludeBookingId) return false;
-          if ((a.assignedDoctor ?? '').trim().toLowerCase() != normalizedDoctor)
+          if ((a.assignedDoctor ?? '').trim().toLowerCase() !=
+              normalizedDoctor) {
             return false;
+          }
           if (!{
             'accepted',
             'assigned',
             'in_service',
             'queued',
-          }.contains(a.status))
+          }.contains(a.status)) {
             return false;
+          }
           return (a.assignedTime ?? '').isNotEmpty;
         })
         .map((a) => a.assignedTime!.trim())
@@ -4956,7 +4978,7 @@ class _TimeSlotPickerDialogState extends State<TimeSlotPickerDialog> {
             (() {
               final takenTimes = _computeTakenTimes(_doctorController.text);
               return DropdownButtonFormField<String>(
-                value: _selectedTime,
+                initialValue: _selectedTime,
                 decoration: const InputDecoration(
                   labelText: 'Time slot (15-min intervals)',
                   border: OutlineInputBorder(),
